@@ -227,6 +227,13 @@ UrlGroup::SetAuthentication(ULONG p_scheme, CString p_domain, CString p_realm, b
   m_ntlmCaching = p_caching;
 }
 
+void 
+UrlGroup::SetAuthenticationWide(wstring p_domain, wstring p_realm)
+{
+  m_domainWide = p_domain;
+  m_realmWide  = p_realm;
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // PRIVATE
