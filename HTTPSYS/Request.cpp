@@ -74,6 +74,9 @@ Request::~Request()
 void
 Request::ReceiveRequest()
 {
+  // Wake up any application that will service me!
+  m_queue->DemandStart();
+
   // Try to establish a SSL/TLS connection (if so necessary)
   try
   {
@@ -887,8 +890,15 @@ Request::FindUrlContext()
   URL* url = m_queue->FindLongestURL(m_port,abspath);
   if(url)
   {
+    // Keep the URL and the context pointer
     m_url = url;
     m_request.UrlContext = url->m_context;
+
+    // Check if the URL is part of an active URL group
+    if (url->m_urlGroup->GetEnabledState() == HttpEnabledStateInactive)
+    {
+      throw HTTP_STATUS_SERVICE_UNAVAIL;
+    }
     return;
   }
   // Weird: no context found

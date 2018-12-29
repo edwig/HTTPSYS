@@ -227,4 +227,9 @@
       <Filter>Documentation</Filter>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="..\Documentation\Releasenotes.txt">
+      <Filter>Documentation</Filter>
+    </Text>
+  </ItemGroup>
 </Project>

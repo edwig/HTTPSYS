@@ -15,6 +15,7 @@ rmdir /q /s Release
 rmdir /q /s HTTPSYS\x64
 rmdir /q /s HTTPSYS\Debug
 rmdir /q /s HTTPSYS\Release
+rmdir /q /s BinDebug_x64
 
 echo .
 echo Ready cleaning

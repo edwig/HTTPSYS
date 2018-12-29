@@ -1,0 +1,12 @@
+HTTPSYS: User-space implementation of HTTP.SYS
+==============================================
+
+Version 1.0.1 dd 29-12-2018
+---------------------------
+1) More property functions for both UrlGroup and Server session
+2) Waiting for demand start and waiting for disconnect are implemented.
+
+Version 1.0 dd 27-12-2018
+-------------------------
+All functionality for stand-alone web servers like Marlin are working
+Total testset on client/server sides are working.

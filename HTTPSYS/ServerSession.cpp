@@ -96,6 +96,18 @@ ServerSession::RemoveUrlGroup(UrlGroup* p_group)
   return false;
 }
 
+// Changing our state means changing the state of all URL groups!
+void
+ServerSession::SetEnabledState(HTTP_ENABLED_STATE p_state)
+{
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetEnabledState(p_state);
+  }
+  m_state = p_state;
+}
 
 void 
 ServerSession::SetSocketLogging(int p_logging)
@@ -103,6 +115,90 @@ ServerSession::SetSocketLogging(int p_logging)
   if(p_logging >= SOCK_LOGGING_OFF && p_logging <= SOCK_LOGGING_FULLTRACE)
   {
     m_socketLogging = p_logging;
+  }
+}
+
+void 
+ServerSession::SetTimeoutEntityBody(USHORT p_timeout)
+{ 
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetTimeoutEntityBody(p_timeout);
+  }
+  m_timeoutEntityBody = p_timeout;
+}
+
+void 
+ServerSession::SetTimeoutDrainBody(USHORT p_timeout)
+{ 
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetTimeoutDrainBody(p_timeout);
+  }
+  m_timeoutDrainEntityBody = p_timeout;
+}
+
+void 
+ServerSession::SetTimeoutRequestQueue(USHORT p_timeout)
+{ 
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetTimeoutRequestQueue(p_timeout);
+  }
+  m_timeoutRequestQueue = p_timeout;
+}
+
+void 
+ServerSession::SetTimeoutIdleConnection(USHORT p_timeout)
+{ 
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetTimeoutIdleConnection(p_timeout);
+  }
+  m_timeoutIdleConnection = p_timeout;
+}
+
+void 
+ServerSession::SetTimeoutHeaderWait(USHORT p_timeout)
+{ 
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetTimeoutHeaderWait(p_timeout);
+  }
+  m_timeoutHeaderWait = p_timeout; 
+}
+
+void 
+ServerSession::SetTimeoutMinSendRate(ULONG  p_rate) 
+{
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetTimeoutMinSendRate(p_rate);
+  }
+  m_timeoutMinSendRate = p_rate;
+}
+
+void     
+ServerSession::SetAuthentication(ULONG p_scheme,CString p_domain,CString p_realm,wstring p_domainW,wstring p_realmW,bool p_caching)
+{
+  AutoCritSec lock(&m_lock);
+
+  for(auto& group : m_groups)
+  {
+    group->SetAuthentication(p_scheme,p_domain,p_realm,p_caching);
+    group->SetAuthenticationWide(p_domainW,p_realmW);
   }
 }
 

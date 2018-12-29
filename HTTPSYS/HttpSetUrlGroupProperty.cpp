@@ -127,7 +127,9 @@ SetUrlGroupAuthentication(UrlGroup* p_group,PHTTP_SERVER_AUTHENTICATION_INFO p_i
   else
   {
     // Reset the authentication of the URL group
+    wstring empty;
     p_group->SetAuthentication(0,"","",false);
+    p_group->SetAuthenticationWide(empty, empty);
   }
   return NO_ERROR;
 }
@@ -156,7 +158,7 @@ SetUrlGroupEnabledState(UrlGroup* p_group, PHTTP_STATE_INFO p_info)
   }
   else
   {
-    p_group->SetEnabledState(HttpEnabledStateInactive);
+    p_group->SetEnabledState(HttpEnabledStateActive);
   }
   return NO_ERROR;
 }

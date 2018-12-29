@@ -79,7 +79,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <OutDir>$(SolutionDir)..\Bin$(Configuration)_$(Platform)\</OutDir>
+    <OutDir>$(SolutionDir)Bin$(Configuration)_$(Platform)\</OutDir>
     <TargetExt>.dll</TargetExt>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -234,6 +234,9 @@
     <None Include="..\LICENSE" />
     <None Include="..\README.md" />
     <None Include="..\Planning.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="..\Documentation\Releasenotes.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
