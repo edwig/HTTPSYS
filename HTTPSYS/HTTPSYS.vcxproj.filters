@@ -87,6 +87,9 @@
     <ClInclude Include="CodeBase64.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="HTTPReadRegister.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -213,6 +216,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="CodeBase64.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HTTPReadRegister.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

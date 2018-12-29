@@ -64,10 +64,6 @@ private:
   int                 SegmentedCompare(const char* p_left,const char* p_right);
   bool                UrlIsRegistered(CString p_prefix);
   bool                GetURLSettings(URL& p_url);
-  bool                ReadRegister(CString  p_sectie,CString p_key,DWORD p_type
-                                  ,CString& p_value1
-                                  ,PDWORD   p_value2
-                                  ,PTCHAR   p_value3,PDWORD p_size3);
 
   // Primary identity
   ServerSession*     m_session;

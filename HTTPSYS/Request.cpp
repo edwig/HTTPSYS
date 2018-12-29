@@ -352,6 +352,9 @@ Request::SendResponse(PHTTP_RESPONSE p_response,PULONG p_bytes)
   CString buffer;
   AddResponseLine(buffer,p_response);
 
+  // Create server header (or not!!)
+  CreateServerHeader(p_response);
+
   // Add all response headers
   AddAllKnownResponseHeaders  (buffer,p_response->Headers.KnownHeaders);
   AddAllUnknownResponseHeaders(buffer,p_response->Headers.pUnknownHeaders
@@ -1626,6 +1629,27 @@ Request::AddResponseLine(CString& p_buffer,PHTTP_RESPONSE p_response)
                                         ,p_response->Version.MinorVersion
                                         ,p_response->StatusCode
                                         ,p_response->pReason);
+}
+
+// Add a server header (only if server header not yet set)
+void
+Request::CreateServerHeader(PHTTP_RESPONSE p_response)
+{
+  if(m_url && m_url->m_urlGroup)
+  {
+    ServerSession* session = m_url->m_urlGroup->GetServerSession();
+    LPCSTR         version = session->GetServerVersion();
+    int            disable = session->GetDisableServerHeader();
+
+    if(disable == 0 || (disable == 1 && p_response->StatusCode < HTTP_STATUS_BAD_REQUEST))
+    {
+      if(p_response->Headers.KnownHeaders[HttpHeaderServer].pRawValue == nullptr)
+      {
+        p_response->Headers.KnownHeaders[HttpHeaderServer].pRawValue = version;
+        p_response->Headers.KnownHeaders[HttpHeaderServer].RawValueLength = (USHORT) strlen(version);
+      }
+    }
+  }
 }
 
 // Add all known response headers to the output buffer

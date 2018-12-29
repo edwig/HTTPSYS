@@ -1,6 +1,20 @@
 HTTPSYS: User-space implementation of HTTP.SYS
 ==============================================
 
+Version 1.0.2 dd 29-12-2018
+---------------------------
+1) Implemented registry setting "DisableServerHeader".
+   This key controls how http.sys behaves with regards to appending the http response header "Server" 
+   for responses that it sends to clients. 
+   A value of 0, which is the default value, will use the header value the application provides to http.sys, 
+                 or will append the default value of ‘Microsoft-HTTPAPI/2.0’ to the response header. 
+   A value of 1 will not append the "Server" header for responses generated 
+                 by http.sys (responses ending in 400, 503, and other status codes). 
+   A value of 2 will prevent http.sys from appending a ‘Server’ header to the response. 
+                 If a 'Server' header is present on the response, it will not be removed, 
+                 if one is not present, it will not be added.  
+
+
 Version 1.0.1 dd 29-12-2018
 ---------------------------
 1) More property functions for both UrlGroup and Server session

@@ -50,12 +50,5 @@ Existing checks are:
 - UrlSegmentMaxLength (260) 0 - 32,766 chars
   Maximum number of characters in a URL path segment (the area between the slashes in the URL). 
   If zero, it is the length that is bounded by the maximum value of a ULONG.
-- DisableServerHeader (0) 0 - 2
-  This key controls how http.sys behaves with regards to appending the http response header "Server" 
-  for responses that it sends to clients. A value of 0, which is the default value, will use the header 
-  value the application provides to http.sys, or will append the default value of ‘Microsoft-HTTPAPI/2.0’ 
-  to the response header. A value of 1 will not append the "Server" header for responses generated 
-  by http.sys (responses ending in 400, 503, and other status codes). 
-  A value of 2 will prevent http.sys from appending a ‘Server’ header to the response. 
-  If a 'Server' header is present on the response, it will not be removed, if one is not present, it will not be added.  
+
   

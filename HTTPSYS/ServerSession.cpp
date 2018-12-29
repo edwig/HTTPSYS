@@ -13,6 +13,7 @@
 #include "UrlGroup.h"
 #include "Logfile.h"
 #include "Logging.h"
+#include "HTTPReadRegister.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -25,6 +26,7 @@ ServerSession::ServerSession()
 {
   ASSERT(g_session == nullptr);
 
+  ReadRegistrySettings();
   CreateLogfile();
   InitializeCriticalSection(&m_lock);
 }
@@ -55,20 +57,13 @@ ServerSession::~ServerSession()
   DeleteCriticalSection(&m_lock);
 }
 
-void
-ServerSession::CreateLogfile()
+LPCSTR
+ServerSession::GetServerVersion()
 {
-  CString name = ("HTTP_Server");
-  m_logfile = new Logfile(name);
-  m_logfile->SetLogRotation(true);
-  m_logfile->SetLogLevel(m_socketLogging = SOCK_LOGGING_FULLTRACE);
-
-  CString filename;
-  filename.GetEnvironmentVariable("WINDIR");
-  filename += "\\TEMP\\HTTP_Server.txt";
-
-  m_logfile->SetLogFilename(filename);
+  m_server.Format("Marlin HTTPAPI/%s Version: %s",VERSION_HTTPAPI,VERSION_HTTPSYS);
+  return m_server.GetString();
 }
+
 
 ULONG
 ServerSession::AddUrlGroup(UrlGroup* p_group)
@@ -274,5 +269,53 @@ void PrintHexDump(DWORD p_length, const void* p_buffer)
   if(g_session && g_session->GetSocketLogging() >= SOCK_LOGGING_TRACE)
   {
     PrintHexDumpActual(p_length,p_buffer);
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////
+//
+// PRIVATE
+//
+//////////////////////////////////////////////////////////////////////////
+
+void
+ServerSession::CreateLogfile()
+{
+  CString name = ("HTTP_Server");
+  m_logfile = new Logfile(name);
+  m_logfile->SetLogRotation(true);
+  m_logfile->SetLogLevel(m_socketLogging = SOCK_LOGGING_FULLTRACE);
+
+  CString filename;
+  filename.GetEnvironmentVariable("WINDIR");
+  filename += "\\TEMP\\HTTP_Server.txt";
+
+  m_logfile->SetLogFilename(filename);
+}
+
+// Reading the general registry settings
+void    
+ServerSession::ReadRegistrySettings()
+{
+  CString value1;
+  CString sectie;
+  DWORD   value2 = 0;
+  TCHAR   value3[BUFF_LEN];
+  DWORD   size3 = BUFF_LEN;
+
+  if(HTTPReadRegister(sectie,"DisableServerHeader",REG_DWORD,value1,&value2,value3,&size3))
+  {
+    if(value2 >= 0 && value2 <= 2)
+    {
+      m_disableServerHeader = value2;
+    }
+  }
+
+  if(HTTPReadRegister(sectie,"MaxConnections",REG_DWORD,value1,&value2,value3,&size3))
+  {
+    if(value2 >= SESSION_MIN_CONNECTIONS && value2 <= SESSION_MAX_CONNECTIONS)
+    {
+      m_maxConnections = value2;
+    }
   }
 }

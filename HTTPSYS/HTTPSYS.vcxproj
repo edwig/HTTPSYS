@@ -162,6 +162,7 @@
     <ClInclude Include="CodeBase64.h" />
     <ClInclude Include="CreateCertificate.h" />
     <ClInclude Include="GetUserAccount.h" />
+    <ClInclude Include="HTTPReadRegister.h" />
     <ClInclude Include="Listener.h" />
     <ClInclude Include="Logfile.h" />
     <ClInclude Include="HTTPLoglevel.h" />
@@ -192,6 +193,7 @@
     <ClCompile Include="HttpDeclarePush.cpp" />
     <ClCompile Include="HttpFlushResponseCache.cpp" />
     <ClCompile Include="HttpReadFragmentFromCache.cpp" />
+    <ClCompile Include="HTTPReadRegister.cpp" />
     <ClCompile Include="HttpReceiveClientCertificate.cpp" />
     <ClCompile Include="HttpReceiveRequestEntityBody.cpp" />
     <ClCompile Include="HttpRemoveUrl.cpp" />
