@@ -1,6 +1,16 @@
 HTTPSYS: User-space implementation of HTTP.SYS
 ==============================================
 
+Version 1.0.3 dd 30-12-2018
+---------------------------
+1) Better checking of handles before converting them into object pointers. This is done for:
+   - ServerSession
+   - RequestQueue
+   - UrlGroup
+   - Request
+   All Http* API calls have been altered to perform these checks
+2) Fixed a bug in the "ExtraStop" event in the "PlainSocket"
+
 Version 1.0.2 dd 29-12-2018
 ---------------------------
 1) Implemented registry setting "DisableServerHeader".
