@@ -1,6 +1,10 @@
 HTTPSYS: User-space implementation of HTTP.SYS
 ==============================================
 
+Version 1.0.4 dd 31-12-2018
+---------------------------
+1) Changed RequestQueue handle to a real HANDLE. In preparation of Async I/O
+
 Version 1.0.3 dd 30-12-2018
 ---------------------------
 1) Better checking of handles before converting them into object pointers. This is done for:
