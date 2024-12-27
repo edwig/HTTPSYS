@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -11,6 +11,7 @@
 #include "http_private.h"
 #include "SecureServerSocket.h"
 #include "RequestQueue.h"
+#include "OpaqueHandles.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -33,6 +34,12 @@ HttpReceiveClientCertificate(IN HANDLE              RequestQueueHandle
     return ERROR_IMPLEMENTATION_LIMIT;
   }
 
+  // Initialize to zero
+  if(BytesReceived)
+  {
+    *BytesReceived = 0;
+  }
+
   // Need pointers and bytes
   if(SslClientCertInfo == nullptr || SslClientCertInfoSize == 0 || BytesReceived == nullptr)
   {
@@ -47,7 +54,7 @@ HttpReceiveClientCertificate(IN HANDLE              RequestQueueHandle
 
   // Get our queue
   // Finding our request queue
-  RequestQueue* queue = GetRequestQueueFromHandle(RequestQueueHandle);
+  RequestQueue* queue = g_handles.GetReQueueFromOpaqueHandle(RequestQueueHandle);
   if(queue == nullptr)
   {
     return ERROR_INVALID_PARAMETER;
@@ -64,7 +71,7 @@ HttpReceiveClientCertificate(IN HANDLE              RequestQueueHandle
   CertificateInfo* info = Flags ? socket->GetServerCertificate() : socket->GetClientCertificate();
   if(info == nullptr)
   {
-    return ERROR_INVALID_PARAMETER;
+    return ERROR_NOT_FOUND;
   }
 
   // Getting our blob or ERROR_MORE_DATA

@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -16,6 +16,10 @@
 
 // For header lines
 #define MESSAGE_BUFFER_LENGTH (16*1024)
+// For files, the buffer should be arbitrarily shorter than the maximum TCP/IP frame
+// To accommodate the header blocks of the TCP/IP stack ( a few hundred bytes)
+#define FILE_BUFFER_LENGTH    (16*1000)
+
 // Minimum timeout for HTTP body receiving in seconds
 #define HTTP_MINIMUM_TIMEOUT 10 
 // Default space for a SSPI authentication provider buffer
@@ -36,6 +40,7 @@ RQ_Status;
 class RequestQueue;
 class Listener;
 class SocketStream;
+class SYSWebSocket;
 
 class Request
 {
@@ -47,22 +52,24 @@ public:
  ~Request();
 
   // SETTERS
-  void              SetStatus(RQ_Status p_status)             { m_status = p_status; };
-  void              SetURLContext(HTTP_URL_CONTEXT p_context) { m_request.UrlContext    = p_context; };
-  void              SetBytesRead(ULONG p_bytes)               { m_request.BytesReceived = p_bytes;   };
+  void              SetStatus(RQ_Status p_status)             { m_status                = p_status;  }
+  void              SetURLContext(HTTP_URL_CONTEXT p_context) { m_request.UrlContext    = p_context; }
+  void              SetBytesRead(ULONG p_bytes)               { m_request.BytesReceived = p_bytes;   }
 
   // GETTERS
-  ULONGLONG         GetIdent()          { return m_ident;               };
-  RQ_Status         GetStatus()         { return m_status;              };
-  SocketStream*     GetSocket()         { return m_socket;              };
-  ULONG             GetBytes()          { return m_bytesRead;           };
-  PHTTP_REQUEST_V2  GetV2Request()      { return &m_request;            };
-  HTTP_URL_CONTEXT  GetURLContext()     { return m_request.UrlContext;  };
-  PCSTR             GetURL()            { return m_request.pRawUrl;     };
-  ULONGLONG         GetContentLength()  { return m_contentLength;       };
-  Listener*         GetListener()       { return m_listener;            };
-  HANDLE            GetAccessToken()    { return m_token;               };
+  ULONGLONG         GetIdent()          { return m_ident;               }
+  RQ_Status         GetStatus()         { return m_status;              }
+  SocketStream*     GetSocket()         { return m_socket;              }
+  ULONG             GetBytes()          { return m_bytesRead;           }
+  PHTTP_REQUEST_V2  GetV2Request()      { return &m_request;            }
+  HTTP_URL_CONTEXT  GetURLContext()     { return m_request.UrlContext;  }
+  PCSTR             GetURL()            { return m_request.pRawUrl;     }
+  ULONGLONG         GetContentLength()  { return m_contentLength;       }
+  Listener*         GetListener()       { return m_listener;            }
+  HANDLE            GetAccessToken()    { return m_token;               }
+  SYSWebSocket*     GetWebSocket()      { return m_websocket;           }
   bool              GetResponseComplete();
+  XString           GetHostName();
 
   // FUNCTIONS
   void              ReceiveRequest();
@@ -96,21 +103,20 @@ private:
   // Header lines
   void              ReceiveHeaders();
   void              ReadInitialMessage();
-  CString           ReadTextLine();
-  void              ReceiveHTTPLine(CString p_line);
-  void              ProcessHeader(CString p_line);
+  LPSTR             ReadTextLine();
+  void              ReceiveHTTPLine(LPSTR p_line);
+  void              ProcessHeader(LPSTR p_line);
   void              FindContentLength();
   void              CorrectFullURL();
   int               CopyInitialBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes);
   void              FreeInitialBuffer();
 
-
   // Cooking the URL
-  void              FindVerb(char* p_verb);
-  void              FindURL (char* p_url);
-  void              FindProtocol(char* p_protocol);
+  void              FindVerb(LPSTR p_verb);
+  void              FindURL (LPSTR p_url);
+  void              FindProtocol(LPCSTR p_protocol);
   // Finding the known header names
-  int               FindKnownHeader(CString p_header);
+  int               FindKnownHeader(LPSTR p_header);
   void              FindKeepAlive();
   // Authentication of the request
   bool              CheckAuthentication();
@@ -139,6 +145,9 @@ private:
   int               ReadBuffer (PVOID p_buffer,ULONG p_size,PULONG p_bytes);
   int               WriteBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes);
 
+  // WebSockets
+  void              CreateWebSocket();
+
   // Identification of the request 
   ULONGLONG         m_ident{ HTTP_REQUEST_IDENT };
   // Private data
@@ -162,25 +171,11 @@ private:
   clock_t           m_timestamp;      // Time of the authentication
   HANDLE            m_token;          // Primary authentication token
   // Initial buffer (Header and optional first body part) are cached here
-  char*             m_initialBuffer { nullptr };
+  BYTE*             m_initialBuffer { 0 };
   ULONG             m_initialLength { 0 };
   ULONG             m_bufferPosition{ 0 };
+  // WebSocket
+  bool              m_websocketPrepare;
+  CString           m_websocketKey;
+  SYSWebSocket*     m_websocket;
 };
-
-inline Request*
-GetRequestFromHandle(HTTP_REQUEST_ID p_handle)
-{
-  try
-  {
-    Request* request = reinterpret_cast<Request*>(p_handle);
-    if(request && request->GetIdent() == HTTP_REQUEST_IDENT)
-    {
-      return request;
-    }
-  }
-  catch(...)
-  {
-    // Error in application: Not a Request handle
-  }
-  return nullptr;
-}

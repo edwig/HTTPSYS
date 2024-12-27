@@ -5,11 +5,8 @@ The following MAIN functionality **might** be implemented (or not)
 
 - HTTPServer-API version 1.0 (as a backwards compatibility)
 - HTTP/2.0 Server push
-- Asynchroneous I/O
 
 The following **sub** functions will be implemented in coming versions of this project:
-
-- Logging (Done by HttpSendHttpResponse and HttpSendResponseEntityBody)
 
 Registry setting and checks under "HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\HTTP\Parameters". 
 Existing checks are:

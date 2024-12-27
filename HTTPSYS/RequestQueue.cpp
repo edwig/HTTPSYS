@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -12,6 +12,8 @@
 #include "URL.h"
 #include "RequestQueue.h"
 #include "UrlGroup.h"
+#include "SYSWebSocket.h"
+#include "OpaqueHandles.h"
 #include <malloc.h>
 #include <algorithm>
 #include <winhttp.h>
@@ -22,9 +24,6 @@
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
 #endif
-
-// These are all request queues
-RequestQueues g_requestQueues;
 
 // CTOR
 RequestQueue::RequestQueue(CString p_name)
@@ -38,6 +37,10 @@ RequestQueue::~RequestQueue()
 {
   StopAllListeners();
   DeleteAllFragments();
+  ClearIncomingWaiters();
+  DeleteAllWaiters();
+  DeleteAllServicing();
+  DeleteAllWebSockets();
   DeleteCriticalSection(&m_lock);
   CloseEvent();
   CloseQueueHandle();
@@ -46,27 +49,31 @@ RequestQueue::~RequestQueue()
 HANDLE
 RequestQueue::CreateHandle()
 {
-  if(m_handle)
-  {
-    return NULL;
-  }
+  HANDLE handle = nullptr;
   CString tempFilename;
-  tempFilename.GetEnvironmentVariable("WINDIR");
-  tempFilename += "\\TEMP\\RequestQueue_";
+  if(!tempFilename.GetEnvironmentVariable(_T("WINDIR")))
+  {
+    tempFilename = _T("C:\\Windows");
+  }
+  tempFilename += _T("\\TEMP\\RequestQueue_");
   tempFilename += m_name;
 
-  m_handle = CreateFile(tempFilename
-                       ,GENERIC_READ|GENERIC_WRITE
-                       ,FILE_SHARE_READ|FILE_SHARE_WRITE
-                       ,NULL  // Security
-                       ,OPEN_ALWAYS
-                       ,FILE_ATTRIBUTE_NORMAL| FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED | FILE_FLAG_DELETE_ON_CLOSE
-                       ,NULL);
-  if(m_handle == INVALID_HANDLE_VALUE)
+  handle = CreateFile(tempFilename
+                     ,GENERIC_READ | GENERIC_WRITE
+                     ,FILE_SHARE_READ | FILE_SHARE_WRITE
+                     ,NULL  // Security
+                     ,OPEN_ALWAYS
+                     ,FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED | FILE_FLAG_DELETE_ON_CLOSE
+                     ,NULL);
+  if(handle == INVALID_HANDLE_VALUE)
   {
     return NULL;
   }
-  return m_handle;
+  if(m_handle)
+  {
+    CloseHandle(m_handle);
+  }
+  return (m_handle = handle);
 }
 
 // Add an URL-Group to the queue
@@ -93,6 +100,13 @@ RequestQueue::RemoveURLGroup(UrlGroup* p_group)
     }
     else ++it;
   }
+}
+
+UrlGroup* 
+RequestQueue::FirstURLGroup()
+{
+  AutoCritSec lock(&m_lock);
+  return m_groups.front();
 }
 
 // Enable the request queue (or disable it)
@@ -133,6 +147,28 @@ RequestQueue::SetVerbosity(HTTP_503_RESPONSE_VERBOSITY p_verbosity)
   return false;
 }
 
+bool
+RequestQueue::SetIOCompletionPort(HANDLE p_iocp)
+{
+  if(m_iocPort == NULL)
+  {
+    m_iocPort = p_iocp;
+    return true;
+  }
+  return false;
+}
+
+bool
+RequestQueue::SetIOCompletionKey(ULONG_PTR p_key)
+{
+  if(m_iocKey == NULL)
+  {
+    m_iocKey = p_key;
+    return true;
+  }
+  return false;
+}
+
 // Starting a new listener, initialize it and LISTEN
 ULONG
 RequestQueue::StartListener(USHORT p_port,URL* p_url,USHORT p_timeout)
@@ -148,6 +184,7 @@ RequestQueue::StartListener(USHORT p_port,URL* p_url,USHORT p_timeout)
     if(listener->Initialize(p_port) == NoError)
     {
       listener->StartListener();
+      m_listening = true;
       return NO_ERROR;
     }
     else
@@ -181,6 +218,9 @@ RequestQueue::StopListener(USHORT p_port)
     delete it->second;
     m_listeners.erase(it);
   }
+
+  // No longer listening
+  m_listening = false;
   return NO_ERROR;
 }
 
@@ -215,6 +255,17 @@ RequestQueue::AddIncomingRequest(Request* p_request)
   if(m_incoming.size() < m_queueLength)
   {
     m_incoming.push_back(p_request);
+
+    // In the case of a Overlapped I/O request, do that first
+    // Otherwise we will hang in synchronous mode
+    if(!m_waiting.empty())
+    {
+      PREGISTER_HTTP_RECEIVE_REQUEST reg = FirstWaitingRequest();
+      if(reg)
+      {
+        StartAsyncReceiveHttpRequest(reg);
+      }
+    }
     // Wake up waiters for the request queue
     SetEvent(m_event);
   }
@@ -263,10 +314,11 @@ RequestQueue::GetNextRequest(HTTP_REQUEST_ID  RequestId
       DWORD result = WaitForSingleObject(m_event,INFINITE);
       lock.Relock();
 
+      // Check if server is stopping
       // Still no request in the queue, or event interrupted
-      if(m_incoming.empty() || result == WAIT_ABANDONED || result == WAIT_FAILED)
+      if(!m_listening || m_incoming.empty() || result == WAIT_ABANDONED || result == WAIT_FAILED)
       {
-        return ERROR_HANDLE_EOF;
+        return ERROR_OPERATION_ABORTED;
       }
     }
 
@@ -386,6 +438,7 @@ RequestQueue::RemoveRequest(Request* p_request)
   Requests::iterator it = std::find(m_servicing.begin(),m_servicing.end(),p_request);
   if(it != m_servicing.end())
   {
+    TRACE("DELETE request from servicing queue\n");
     delete p_request;
     m_servicing.erase(it);
     return;
@@ -395,6 +448,7 @@ RequestQueue::RemoveRequest(Request* p_request)
   it = std::find(m_incoming.begin(),m_incoming.end(),p_request);
   if(it != m_incoming.end())
   {
+    TRACE("DELETE request from incoming queue\n");
     delete p_request;
     m_incoming.erase(it);
     return;
@@ -402,6 +456,7 @@ RequestQueue::RemoveRequest(Request* p_request)
 
   // Request was not found in any queue
   // Delete it all the while
+  TRACE("DELETE dangling request\n");
   delete p_request;
 }
 
@@ -411,16 +466,29 @@ RequestQueue::AddFragment(CString p_prefix, PHTTP_DATA_CHUNK p_chunk)
 {
   AutoCritSec lock(&m_lock);
 
+  if(p_chunk == nullptr || p_prefix.IsEmpty())
+  {
+    return ERROR_INVALID_PARAMETER;
+  }
+
   p_prefix.MakeLower();
   Fragments::iterator it = m_fragments.find(p_prefix);
   if(it != m_fragments.end())
   {
     // Make a copy of the memory data chunk
     PHTTP_DATA_CHUNK chunk = (PHTTP_DATA_CHUNK) calloc(1,sizeof(HTTP_DATA_CHUNK));
+    if(chunk == nullptr)
+    {
+      return ERROR_OUTOFMEMORY;
+    }
     chunk->DataChunkType = HttpDataChunkFromMemory;
     ULONG length = p_chunk->FromMemory.BufferLength;
     chunk->FromMemory.BufferLength =   length;
     chunk->FromMemory.pBuffer = malloc(length + 1);
+    if (chunk->FromMemory.pBuffer == nullptr)
+    {
+      return ERROR_OUTOFMEMORY;
+    }
     memcpy (chunk->FromMemory.pBuffer,p_chunk->FromMemory.pBuffer,length);
     ((char*)chunk->FromMemory.pBuffer)[length] = 0;
 
@@ -491,34 +559,7 @@ RequestQueue::FlushFragment(CString p_prefix,ULONG Flags)
   }
 
   // Return flushed or no fragments found
-  return erased > 0 ? NO_ERROR : ERROR_NOT_FOUND;
-}
-
-// Return the 'TransmitFile' function for a socket
-// This function caches the result, so that it get's called
-// only one time (1) for the TCP/IP stack.
-PointTransmitFile 
-RequestQueue::GetTransmitFile(SOCKET p_socket)
-{
-  if(m_transmitFile == nullptr)
-  {
-    GUID  trans = WSAID_TRANSMITFILE;
-    DWORD bytes = 0;
-    int  result = WSAIoctl(p_socket
-                          ,SIO_GET_EXTENSION_FUNCTION_POINTER
-                          ,&trans
-                          ,sizeof(GUID)
-                          ,&m_transmitFile
-                          ,sizeof(m_transmitFile)
-                          ,&bytes
-                          ,NULL,NULL);
-    if(result != NO_ERROR)
-    {
-      result = WSAGetLastError();
-      m_transmitFile = nullptr;
-    }
-  }
-  return m_transmitFile;
+  return NO_ERROR;
 }
 
 // Signal all listeners to stop listening
@@ -549,6 +590,10 @@ RequestQueue::RegisterDemandStart()
     return ERROR_ALREADY_EXISTS;
   }
   m_start = ::CreateEvent(nullptr,FALSE,FALSE,nullptr);
+  if(m_start == NULL)
+  {
+    return ERROR_RESOURCE_FAILED;
+  }
   DWORD result = WaitForSingleObject(m_start,INFINITE);
 
   CloseHandle(m_start);
@@ -630,6 +675,7 @@ RequestQueue::CloseQueueHandle()
 {
   if(m_handle)
   {
+    g_handles.RemoveOpaqueHandle(m_handle);
     CloseHandle(m_handle);
     m_handle = nullptr;
   }
@@ -648,4 +694,138 @@ RequestQueue::DeleteAllFragments()
     free(chunk);
   }
   m_fragments.clear();
+}
+
+//////////////////////////////////////////////////////////////////////////
+//
+// OVERLAPPED I/O
+//
+//////////////////////////////////////////////////////////////////////////
+
+// Add a receiving request to the queue
+void
+RequestQueue::AddWaitingRequest(PREGISTER_HTTP_RECEIVE_REQUEST p_register)
+{
+  AutoCritSec lock(&m_lock);
+
+  m_waiting.push_back(p_register);
+}
+
+// Return the first request to signal from the queue
+// and remove it from the queue
+PREGISTER_HTTP_RECEIVE_REQUEST
+RequestQueue::FirstWaitingRequest()
+{
+  AutoCritSec lock(&m_lock);
+
+  PREGISTER_HTTP_RECEIVE_REQUEST req = nullptr;
+  if(!m_waiting.empty())
+  {
+    req = m_waiting.front();
+    m_waiting.pop_front();
+  }
+  return req;
+}
+
+// Part of the reset procedure: Clean out the waiting queue
+void
+RequestQueue::DeleteAllWaiters()
+{
+  while(!m_waiting.empty())
+  {
+    PREGISTER_HTTP_RECEIVE_REQUEST req = m_waiting.front();
+    delete req;
+    m_waiting.pop_front();
+  }
+}
+
+// Part of the reset procedure: Clean out the servicing requests queue
+void
+RequestQueue::DeleteAllServicing()
+{
+  while(!m_servicing.empty())
+  {
+    Request* request = m_servicing.front();
+    delete request;
+    m_servicing.pop_front();
+  }
+}
+
+// Close and remove all WebSockets
+void
+RequestQueue::DeleteAllWebSockets()
+{
+  AutoCritSec lock(&m_lock);
+
+//   try
+//   {
+//     for(auto& sock : m_websockets)
+//     {
+//       sock.second->CloseTcpConnection();
+//       delete sock.second;
+//     }
+//     m_websockets.clear();
+//   }
+//   catch(StdException& /*ex*/)
+//   {
+//   }
+}
+
+// See if a WebSocket with this secure key already exists in the driver
+SYSWebSocket*
+RequestQueue::FindWebSocket(CString p_websocketKey)
+{
+  AutoCritSec lock(&m_lock);
+
+  WebSockets::iterator it = m_websockets.find(p_websocketKey);
+  if(it != m_websockets.end())
+  {
+    return it->second;
+  }
+  return nullptr;
+}
+
+// If the WebSocket with this secure key does not exist, add it to the mapping
+bool
+RequestQueue::AddWebSocket(CString p_websocketKey,SYSWebSocket* p_websocket)
+{
+  AutoCritSec lock(&m_lock);
+
+  if(FindWebSocket(p_websocketKey) == nullptr)
+  {
+    m_websockets[p_websocketKey] = p_websocket;
+    return true;
+  }
+  return false;
+}
+
+// If the WebSocket was already known by this key, replace it
+bool
+RequestQueue::ReconnectWebsocket(CString p_websocketKey,SYSWebSocket* p_websocket)
+{
+  AutoCritSec lock(&m_lock);
+
+  WebSockets::iterator it = m_websockets.find(p_websocketKey);
+  if(it != m_websockets.end())
+  {
+    it->second = p_websocket;
+    return true;
+  }
+  return false;
+}
+
+bool
+RequestQueue::DeleteWebSocket(CString p_websocketKey)
+{
+  AutoCritSec lock(&m_lock);
+
+  WebSockets::iterator it = m_websockets.find(p_websocketKey);
+  if(it != m_websockets.end())
+  {
+    it->second->CloseTcpConnection();
+    delete it->second;
+    m_websockets.erase(it);
+    return true;
+  }
+  return false;
 }

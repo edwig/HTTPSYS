@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -52,14 +52,15 @@ public:
   int       GetRecvTimeoutSeconds() { return m_recvTimeoutSeconds; };
 
   std::function<SECURITY_STATUS(PCCERT_CONTEXT & pCertContext, LPCTSTR p_certSTore,PTCHAR p_thumbprint)> m_selectServerCert;
-  std::function<bool(PCCERT_CONTEXT pCertContext, const bool trusted)>                  m_clientCertAcceptable;
-  static UINT __cdecl Worker(void *);
+  std::function<bool(PCCERT_CONTEXT pCertContext, const bool trusted)> m_clientCertAcceptable;
+
+  static unsigned __stdcall ListenerWorker(void* p_param);
+  static unsigned __stdcall Worker(void* p_param);
 
   ULONGLONG m_workerThreadCount;
   CEvent    m_stopEvent;
 private:
-  static UINT __cdecl ListenerWorker(LPVOID);
-  void                Listen(void);
+  void              Listen(void);
 
   // Primary objects of the server
   RequestQueue*     m_queue;          // We are running for this queue
@@ -70,7 +71,7 @@ private:
   HANDLE            m_hSocketEvents[FD_SETSIZE];
   int               m_numListenSockets;
   CCriticalSection  m_workerThreadLock;
-  CWinThread*       m_listenerThread;
+  HANDLE            m_listenerThread { NULL };
   // Timeouts
   int               m_sendTimeoutSeconds { 30 };  // Send timeout in seconds
   int               m_recvTimeoutSeconds { 30 };  // Receive timeout in seconds

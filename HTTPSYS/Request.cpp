@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -19,7 +19,11 @@
 #include "PlainSocket.h"
 #include "SecureServerSocket.h"
 #include "SSLUtilities.h"
-#include "CodeBase64.h"
+#include "Base64.h"
+#include "SYSWebSocket.h"
+#include "OpaqueHandles.h"
+#include <ConvertWideString.h>
+#include <LogAnalysis.h>
 #include <wininet.h>
 #include <mswsock.h>
 
@@ -39,6 +43,8 @@ Request::Request(RequestQueue* p_queue
         ,m_ident(HTTP_REQUEST_IDENT)
         ,m_secure(false)
         ,m_url(nullptr)
+        ,m_websocket(nullptr)
+        ,m_websocketPrepare(false)
 {
   // HTTP_REQUEST_V1 && V2
   ZeroMemory(&m_request,sizeof(HTTP_REQUEST_V2));
@@ -60,7 +66,7 @@ Request::Request(RequestQueue* p_queue
   // Setting OUR identity!!
   // This is WHY we implemented HTTP.SYS in user space!
   m_request.ConnectionId = (HTTP_CONNECTION_ID)m_socket;
-  m_request.RequestId    = (HTTP_REQUEST_ID)   this;
+  m_request.RequestId    = (HTTP_REQUEST_ID)   0L;
 }
 
 Request::~Request()
@@ -75,6 +81,10 @@ Request::~Request()
 void
 Request::ReceiveRequest()
 {
+  // Place request in the global handles
+  HANDLE handle = g_handles.CreateOpaqueHandle(HTTPHandleType::HTTP_Request,this);
+  m_request.RequestId = (HTTP_REQUEST_ID)handle;
+
   // Wake up any application that will service me!
   m_queue->DemandStart();
 
@@ -87,6 +97,7 @@ Request::ReceiveRequest()
   {
     UNREFERENCED_PARAMETER(error);
     ReplyClientError();
+    m_queue->RemoveRequest(this);
     return;
   }
 
@@ -98,25 +109,31 @@ Request::ReceiveRequest()
   {
     try
     {
+      TRACE("Reading HTTP request header line.. Port: %d\n",m_port);
       ReceiveHeaders();
+      TRACE("Reading HTTP request continuation. Port: %d\n",m_port);
+
       if(CheckAuthentication())
       {
         looping = true;
         DrainRequest();
-        ReplyClientError(HTTP_STATUS_DENIED, "Not authenticated");
+        ReplyClientError(HTTP_STATUS_DENIED,_T("Not authenticated"));
         ResetRequestV1();
       }
       else
       {
+        TRACE("Reading HTTP request accepted req. Port: %d\n", m_port);
+        CreateWebSocket();
         m_queue->AddIncomingRequest(this);
         looping = false;
       }
     }
     catch(int error)
     {
-      if(error == HTTP_STATUS_SERVICE_UNAVAIL)
+      if(error == HTTP_STATUS_SERVICE_UNAVAIL ||
+         error == ERROR_OUTOFMEMORY)
       {
-        ReplyServerError(error,"Service temporarily unavailable");
+        ReplyServerError(HTTP_STATUS_SERVICE_UNAVAIL,_T("Service temporarily unavailable"));
         return;
       }
       else if(error == ERROR_HANDLE_EOF)
@@ -127,7 +144,7 @@ Request::ReceiveRequest()
       }
       else
       {
-        LogError("Illegal HTTP client call. Error: %d", error);
+        LogError(_T("Illegal HTTP client call. Error: %d"), error);
         ReplyClientError();
         delete this;
         return;
@@ -144,13 +161,22 @@ Request::ReceiveRequest()
 void
 Request::CloseRequest()
 {
-  if(m_socket)
+  // If we are a WebSocket: close that
+  if(m_websocket)
   {
+    // Close websocket AND the physical socket
+    delete m_websocket;
+    m_websocket = nullptr;
+    m_socket    = nullptr;
+  }
+  else if(m_socket)
+  {
+  // Close the physical socket
     if(m_socket->Close() == false)
     {
       // Log the error
-      int error = WSAGetLastError();
-      LogError("Error shutdown connection: %s Error: %d",m_request.pRawUrl,error);
+      int error = m_socket->GetLastError();
+      LogError(_T("Error shutdown connection: %s Error: %d"),m_request.pRawUrl,error);
     }
     delete m_socket;
     m_socket = nullptr;
@@ -240,7 +266,7 @@ Request::RestartConnection()
   m_status = RQ_CREATED;
 
   // Start new thread, like the listener would do
-  AfxBeginThread(m_listener->Worker,this);
+  _beginthreadex(nullptr,0,m_listener->Worker,this,0,nullptr);
   return true;
 }
 
@@ -261,7 +287,8 @@ Request::ReceiveBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes,bool p_all)
   // Receiving only takes place after reading the headers
   // and before we start answering with a response
   // Can occur with out-of-band HttpReceiveRequestEntityBody requests from the application
-  if(m_status != RQ_READING && m_status != RQ_OPAQUE)
+  // But also can occur when draining the request before sending an HTTP 40x error
+  if(m_status != RQ_CREATED && m_status != RQ_READING && m_status != RQ_OPAQUE)
   {
     return ERROR_CONNECTION_INVALID;
   }
@@ -295,6 +322,10 @@ Request::ReceiveBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes,bool p_all)
     // Try to get a new buffer
     ULONG bytes = 0;
     result = ReadBuffer(p_buffer,p_size,&bytes);
+    if(result == ERROR_IO_PENDING)
+    {
+      return result;
+    }
     if(result)
     {
       result = ERROR_HANDLE_EOF;
@@ -335,11 +366,14 @@ Request::ReceiveChunk(PVOID p_buffer,ULONG p_size)
   USHORT count = m_request.EntityChunkCount;
 
   m_request.pEntityChunks = (PHTTP_DATA_CHUNK) realloc(m_request.pEntityChunks,(count + 1) * sizeof(PHTTP_DATA_CHUNK));
-  m_request.pEntityChunks[count].DataChunkType           = HttpDataChunkFromMemory;
-  m_request.pEntityChunks[count].FromMemory.pBuffer      = (PHTTP_DATA_CHUNK) p_buffer;
-  m_request.pEntityChunks[count].FromMemory.BufferLength = p_size;
+  if(m_request.pEntityChunks)
+  {
+    m_request.pEntityChunks[count].DataChunkType           = HttpDataChunkFromMemory;
+    m_request.pEntityChunks[count].FromMemory.pBuffer      = (PHTTP_DATA_CHUNK) p_buffer;
+    m_request.pEntityChunks[count].FromMemory.BufferLength = p_size;
 
-  ++m_request.EntityChunkCount;
+    ++m_request.EntityChunkCount;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -454,6 +488,17 @@ Request::GetResponseComplete()
     return true;
   }
   return false;
+}
+
+XString
+Request::GetHostName()
+{
+  if(m_socket)
+  {
+    PlainSocket* socket = dynamic_cast<PlainSocket*>(m_socket);
+    return socket->GetHostName();
+  }
+  return _T("");
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -677,7 +722,7 @@ Request::SetAddresses(SOCKET p_socket)
   if(getsockname(p_socket,(PSOCKADDR)&sockaddr,&namelen))
   {
     int error = WSAGetLastError();
-    LogError("Cannot get local address name for connection: %s",m_request.pRawUrl);
+    LogError(_T("Cannot get local address name for connection: %s"),m_request.pRawUrl);
   }
   // Keep the address info
   m_request.Address.pLocalAddress = (PSOCKADDR) calloc(1,namelen);
@@ -689,7 +734,7 @@ Request::SetAddresses(SOCKET p_socket)
   if(getpeername(p_socket,(PSOCKADDR)&sockaddr,&namelen))
   {
     int error = WSAGetLastError();
-    LogError("Cannot get remote address name for connection: %s",m_request.pRawUrl);
+    LogError(_T("Cannot get remote address name for connection: %s"),m_request.pRawUrl);
   }
   // Keep as the remote side of the channel
   m_request.Address.pRemoteAddress = (PSOCKADDR)calloc(1,namelen);
@@ -752,18 +797,24 @@ Request::ReceiveHeaders()
   ReadInitialMessage();
 
   // Getting the HTTP protocol line
-  CString line = ReadTextLine();
+  LPSTR line = ReadTextLine();
   ReceiveHTTPLine(line);
+  delete[] line;
 
   // Reading all request headers
   while (true)
   {
     line = ReadTextLine();
-    if (line.GetLength())
+    if(line[0])
     {
       ProcessHeader(line);
+      delete[] line;
     }
-    else break;
+    else 
+    {
+      delete[] line;
+      break;
+    }
   }
 
   // Finding our site context
@@ -788,8 +839,11 @@ void
 Request::ReadInitialMessage()
 {
   FreeInitialBuffer();
-  m_initialBuffer = (char*) malloc(MESSAGE_BUFFER_LENGTH + 1);
-
+  m_initialBuffer = (BYTE*) malloc(MESSAGE_BUFFER_LENGTH + 1);
+  if(!m_initialBuffer)
+  {
+    throw (INT)ERROR_OUTOFMEMORY;
+  }
   int length = m_socket->RecvPartial(m_initialBuffer,MESSAGE_BUFFER_LENGTH);
   if (length > 0)
   {
@@ -804,22 +858,22 @@ Request::ReadInitialMessage()
 // Find the next line in the initial buffers up to the "\r\n"
 // Mark that the HTTP IETF RFC clearly states that all header
 // lines must end in a <CR><LF> sequence!!
-CString
+LPSTR
 Request::ReadTextLine()
 {
-  char* begin = &m_initialBuffer[m_bufferPosition];
-  char* end = strchr(begin,'\r');
+  BYTE* begin = &m_initialBuffer[m_bufferPosition];
+  BYTE* end   = (BYTE*) strchr((char*)begin,'\r');
 
   if(end && end[1] == '\n')
   {
     int len = (int)((ULONGLONG)end - (ULONGLONG)begin);
-    CString line;
-    char* buffer = line.GetBufferSetLength(len);
-    strncpy_s(buffer,len+1,begin,len);
-    line.ReleaseBufferSetLength(len);
 
+
+    LPSTR buffer = (LPSTR) new char[len + 1];
+    memcpy_s(buffer,len + 1,begin,len);
+    buffer[len] = 0;
     m_bufferPosition += len + 2;
-    return line;
+    return buffer;
   }
   throw ERROR_HTTP_INVALID_HEADER;
 }
@@ -827,16 +881,16 @@ Request::ReadTextLine()
 // Process the essential first line beginning with the HTTP verb
 // VERB /absolute/url/of/the/request  HTTP/1.1
 void
-Request::ReceiveHTTPLine(CString p_line)
+Request::ReceiveHTTPLine(LPSTR p_line)
 {
   USES_CONVERSION;
 
-  char* verb = p_line.GetBuffer();
-  char* url  = strchr(p_line.GetBuffer(),' ');
+  LPSTR verb = p_line;
+  LPSTR url  = strchr(p_line,' ');
   if(url)
   {
     *url++ = 0;
-    char* protocol = strrchr(url,' ');
+    LPSTR protocol = strchr(url,' ');
     if(protocol)
     {
       *protocol++ = 0;
@@ -858,39 +912,61 @@ Request::ReceiveHTTPLine(CString p_line)
 // - Store it as a 'unknown-header'
 // All storing actions require string memory allocations!!
 void
-Request::ProcessHeader(CString p_line)
+Request::ProcessHeader(LPSTR p_line)
 {
   // Remove end-of-line markers.
-  int len = p_line.GetLength();
+  int len = (int)strlen(p_line);
+  LPSTR begin = p_line;
+  LPSTR end   = &p_line[len];
   if (len > 2)
   {
-    p_line.TrimRight("\r\n");
+    if(p_line[len - 1] == '\n') --len;
+    if(p_line[len - 1] == '\r') --len;
   }
+  p_line[len] = 0;
 
   // Find separating colon
-  int colon = p_line.Find(':');
+  LPSTR colon = strchr(p_line,':');
   if(colon)
   {
-    CString header = p_line.Left(colon);
-    CString value = p_line.Mid(colon + 1);
-    value.Trim();
+    LPSTR header = p_line;
+    LPSTR value  = (colon + 1);
+    // Make delimiter
+    *colon = 0;
+    // Remove whitespace 
+    len = (int)strlen(header);
+    while(len >= 0 && isspace(header[len - 1])) --len;
+    if(len >= 0) header[len] = 0;
+
+    int vlen = (int)strlen(value);
+    while(vlen-- >= 0)
+    {
+      if(isspace(value[0])) ++value;
+    }
 
     int knwonHeader = FindKnownHeader(header);
     if (knwonHeader >= 0)
     {
-      m_request.Headers.KnownHeaders[knwonHeader].pRawValue      = _strdup(value.GetString());
-      m_request.Headers.KnownHeaders[knwonHeader].RawValueLength = (USHORT)value.GetLength();
+      m_request.Headers.KnownHeaders[knwonHeader].pRawValue      = _strdup(value);
+      m_request.Headers.KnownHeaders[knwonHeader].RawValueLength = (USHORT)vlen;
     }
     else
     {
       m_request.Headers.pUnknownHeaders = (PHTTP_UNKNOWN_HEADER) realloc(m_request.Headers.pUnknownHeaders, (1 + m_request.Headers.UnknownHeaderCount) * sizeof(HTTP_UNKNOWN_HEADER));
 
-      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].pName          = _strdup(header.GetString());
-      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].NameLength     = (USHORT)header.GetLength();
-      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].pRawValue      = _strdup(value.GetString());
-      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].RawValueLength = (USHORT)value.GetLength();
+      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].pName          = _strdup(header);
+      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].NameLength     = (USHORT)len;
+      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].pRawValue      = _strdup(value);
+      m_request.Headers.pUnknownHeaders[m_request.Headers.UnknownHeaderCount].RawValueLength = (USHORT)vlen;
 
       m_request.Headers.UnknownHeaderCount++;
+
+      // Check for incoming WebSocket
+      if(_stricmp(header,"Sec-WebSocket-Key") == 0)
+      {
+        m_websocketPrepare = true;
+        m_websocketKey     = value;
+      }
     }
     return;
   }
@@ -938,7 +1014,7 @@ Request::FindUrlContext()
     return;
   }
   // Weird: no context found
-  // throw HTTP_STATUS_NOT_FOUND;
+  throw HTTP_STATUS_NOT_FOUND;
 }
 
 // Finding the content length header
@@ -960,30 +1036,46 @@ Request::FindContentLength()
 void
 Request::CorrectFullURL()
 {
-  CString host;
+  LPCSTR host = "";
+  XString hostname;
+  bool ourserver(false);
   if(m_request.Headers.KnownHeaders[HttpHeaderHost].pRawValue)
   {
     host = m_request.Headers.KnownHeaders[HttpHeaderHost].pRawValue;
+  }
+  else
+  {
+    hostname = GetHostName();
+    ourserver = true;
+  }
 
-    CString abspath(m_request.CookedUrl.pAbsPath);
-    if(abspath.Find("//") < 0)
+  AutoCSTR hst(hostname);
+  if(ourserver)
+  {
+    host = hst.cstr();
+  }
+
+  PCWSTR abspath(m_request.CookedUrl.pAbsPath);
+  if((wcschr(abspath,_T('/')) == nullptr) || abspath[0] == _T('/'))
+  {
+    USES_CONVERSION;
+
+    CStringT<char,StrTraitMFC< char > > newpath;
+    CStringT<char,StrTraitMFC< char > > absolute = W2A(abspath);
+    newpath.Format("http://%s%s",host,absolute.GetString());
+
+    if(m_request.CookedUrl.pFullUrl)
     {
-      CString newpath;
-      newpath.Format("http://%s%s",host,abspath);
-
-      if(m_request.CookedUrl.pFullUrl)
-      {
-        free((PVOID)m_request.CookedUrl.pFullUrl);
-        m_request.CookedUrl.pFullUrl = nullptr;
-      }
-      if (m_request.pRawUrl)
-      {
-        free((PVOID)m_request.pRawUrl);
-        m_request.pRawUrl = nullptr;
-      }
-
-      FindURL((char*)newpath.GetString());
+      free((PVOID)m_request.CookedUrl.pFullUrl);
+      m_request.CookedUrl.pFullUrl = nullptr;
     }
+    if (m_request.pRawUrl)
+    {
+      free((PVOID)m_request.pRawUrl);
+      m_request.pRawUrl = nullptr;
+    }
+
+    FindURL((LPSTR)newpath.GetString());
   }
 }
 
@@ -1006,7 +1098,7 @@ Request::FreeInitialBuffer()
 // nows about. All other verbs have the status 'unknown'
 // and are stored by there full name
 //
-static const char* all_verbs[] = 
+static LPCSTR all_verbs[] = 
 {
   "",
   "",
@@ -1033,7 +1125,7 @@ static const char* all_verbs[] =
 // Finding the VERB in the all_verbs array.
 // In case we do not find the verb, we store a string duplicate
 void
-Request::FindVerb(char* p_verb)
+Request::FindVerb(LPSTR p_verb)
 {
   // Find a known-verb and store the status
   for(int ind = HttpVerbOPTIONS; ind < HttpVerbMaximum; ++ind)
@@ -1053,10 +1145,10 @@ Request::FindVerb(char* p_verb)
 // Finding and storing an URL in the request structure
 // 1) As a string duplicate
 // 2) As a Unicode string duplicate
-// 3) As a 'cooked' pointer set to the unicode duplicate
+// 3) As a 'cooked' pointer set to the Unicode duplicate
 //
 void
-Request::FindURL(char* p_url)
+Request::FindURL(LPSTR p_url)
 {
   USES_CONVERSION;
 
@@ -1065,15 +1157,15 @@ Request::FindURL(char* p_url)
   full = full.Trim();
 
   // Copy the raw URL
-  m_request.pRawUrl      = _strdup(full.GetString());
+  m_request.pRawUrl      = _strdup(p_url);
   m_request.RawUrlLength = (USHORT) strlen(p_url);
   // FULL URL
-  wchar_t* copy  = _wcsdup(A2CW(full.GetString()));
+  wchar_t* copy  = _wcsdup(A2CW(p_url));
   m_request.CookedUrl.pFullUrl = copy;
   m_request.CookedUrl.FullUrlLength = (USHORT) (wcslen(m_request.CookedUrl.pFullUrl) * sizeof(wchar_t));
 
   // Cook the URL
-  int posHost  = full.Find("//");
+  int posHost  = full.Find(_T("//"));
   int posPort  = full.Find(':', posHost + 1);
   int posPath  = full.Find('/', posHost > 0 ? posHost + 2 : 0);
   int posQuery = full.Find('?');
@@ -1113,15 +1205,15 @@ Request::FindURL(char* p_url)
 // Finding the HTTP protocol and version numbers at the end of the
 // HTTP command line (Beginning with the HTTP verb)
 void
-Request::FindProtocol(char* p_protocol)
+Request::FindProtocol(LPCSTR p_protocol)
 {
   // skip whitespace
   while(isspace(*p_protocol)) ++p_protocol;
 
-  if(_strnicmp(p_protocol, "http/", 5) == 0)
+  if(_strnicmp(p_protocol,"HTTP/", 5) == 0)
   {
-    char* major = &p_protocol[5];
-    char* minor = strchr(p_protocol, '.');
+    LPCSTR major = &p_protocol[5];
+    LPCSTR minor = strchr(p_protocol,'.');
     if(minor)
     {
       m_request.Version.MajorVersion = atoi(major);
@@ -1135,49 +1227,49 @@ Request::FindProtocol(char* p_protocol)
 
 // Known headers for a HTTP call from client to server
 //
-static const char* all_headers[] =
+static LPCTSTR all_headers[] =
 {
-  "Cache-Control"         //  HttpHeaderCacheControl          = 0,    // general-header [section 4.5]
- ,"Connection"            //  HttpHeaderConnection            = 1,    // general-header [section 4.5]
- ,"Date"                  //  HttpHeaderDate                  = 2,    // general-header [section 4.5]
- ,"Keep-Alive"            //  HttpHeaderKeepAlive             = 3,    // general-header [not in rfc]
- ,"Pragma"                //  HttpHeaderPragma                = 4,    // general-header [section 4.5]
- ,"Trailer"               //  HttpHeaderTrailer               = 5,    // general-header [section 4.5]
- ,"Transfer-Encoding"     //  HttpHeaderTransferEncoding      = 6,    // general-header [section 4.5]
- ,"Upgrade"               //  HttpHeaderUpgrade               = 7,    // general-header [section 4.5]
- ,"Via"                   //  HttpHeaderVia                   = 8,    // general-header [section 4.5]
- ,"Warning"               //  HttpHeaderWarning               = 9,    // general-header [section 4.5]
- ,"Allow"                 //  HttpHeaderAllow                 = 10,   // entity-header  [section 7.1]
- ,"Content-Length"        //  HttpHeaderContentLength         = 11,   // entity-header  [section 7.1]
- ,"Content-Type"          //  HttpHeaderContentType           = 12,   // entity-header  [section 7.1]
- ,"Content-Encoding"      //  HttpHeaderContentEncoding       = 13,   // entity-header  [section 7.1]
- ,"Content-Language"      //  HttpHeaderContentLanguage       = 14,   // entity-header  [section 7.1]
- ,"Content-Location"      //  HttpHeaderContentLocation       = 15,   // entity-header  [section 7.1]
- ,"Content-Md5"           //  HttpHeaderContentMd5            = 16,   // entity-header  [section 7.1]
- ,"Content-Range"         //  HttpHeaderContentRange          = 17,   // entity-header  [section 7.1]
- ,"Expires"               //  HttpHeaderExpires               = 18,   // entity-header  [section 7.1]
- ,"Last-Modified"         //  HttpHeaderLastModified          = 19,   // entity-header  [section 7.1]
- ,"Accept"                //  HttpHeaderAccept                = 20,   // request-header [section 5.3]
- ,"Accept-Charset"        //  HttpHeaderAcceptCharset         = 21,   // request-header [section 5.3]
- ,"Accept-Encoding"       //  HttpHeaderAcceptEncoding        = 22,   // request-header [section 5.3]
- ,"Accept-Language"       //  HttpHeaderAcceptLanguage        = 23,   // request-header [section 5.3]
- ,"Authorization"         //  HttpHeaderAuthorization         = 24,   // request-header [section 5.3]
- ,"Cookie"                //  HttpHeaderCookie                = 25,   // request-header [not in rfc]
- ,"Expect"                //  HttpHeaderExpect                = 26,   // request-header [section 5.3]
- ,"From"                  //  HttpHeaderFrom                  = 27,   // request-header [section 5.3]
- ,"Host"                  //  HttpHeaderHost                  = 28,   // request-header [section 5.3]
- ,"If-Match"              //  HttpHeaderIfMatch               = 29,   // request-header [section 5.3]
- ,"If-Modified-Since"     //  HttpHeaderIfModifiedSince       = 30,   // request-header [section 5.3]
- ,"If-None-Match"         //  HttpHeaderIfNoneMatch           = 31,   // request-header [section 5.3]
- ,"If-Range"              //  HttpHeaderIfRange               = 32,   // request-header [section 5.3]
- ,"If-Unmodified-Since"   //  HttpHeaderIfUnmodifiedSince     = 33,   // request-header [section 5.3]
- ,"Max-Forwards"          //  HttpHeaderMaxForwards           = 34,   // request-header [section 5.3]
- ,"Proxy-Authorization"   //  HttpHeaderProxyAuthorization    = 35,   // request-header [section 5.3]
- ,"Referer"               //  HttpHeaderReferer               = 36,   // request-header [section 5.3]
- ,"Header-Range"          //  HttpHeaderRange                 = 37,   // request-header [section 5.3]
- ,"Te"                    //  HttpHeaderTe                    = 38,   // request-header [section 5.3]
- ,"Translate"             //  HttpHeaderTranslate             = 39,   // request-header [webDAV, not in rfc 2518]
- ,"UserAgent"             //  HttpHeaderUserAgent             = 40,   // request-header [section 5.3]
+  _T("Cache-Control")         //  HttpHeaderCacheControl          = 0,    // general-header [section 4.5]
+ ,_T("Connection")            //  HttpHeaderConnection            = 1,    // general-header [section 4.5]
+ ,_T("Date")                  //  HttpHeaderDate                  = 2,    // general-header [section 4.5]
+ ,_T("Keep-Alive")            //  HttpHeaderKeepAlive             = 3,    // general-header [not in rfc]
+ ,_T("Pragma")                //  HttpHeaderPragma                = 4,    // general-header [section 4.5]
+ ,_T("Trailer")               //  HttpHeaderTrailer               = 5,    // general-header [section 4.5]
+ ,_T("Transfer-Encoding")     //  HttpHeaderTransferEncoding      = 6,    // general-header [section 4.5]
+ ,_T("Upgrade")               //  HttpHeaderUpgrade               = 7,    // general-header [section 4.5]
+ ,_T("Via")                   //  HttpHeaderVia                   = 8,    // general-header [section 4.5]
+ ,_T("Warning")               //  HttpHeaderWarning               = 9,    // general-header [section 4.5]
+ ,_T("Allow")                 //  HttpHeaderAllow                 = 10,   // entity-header  [section 7.1]
+ ,_T("Content-Length")        //  HttpHeaderContentLength         = 11,   // entity-header  [section 7.1]
+ ,_T("Content-Type")          //  HttpHeaderContentType           = 12,   // entity-header  [section 7.1]
+ ,_T("Content-Encoding")      //  HttpHeaderContentEncoding       = 13,   // entity-header  [section 7.1]
+ ,_T("Content-Language")      //  HttpHeaderContentLanguage       = 14,   // entity-header  [section 7.1]
+ ,_T("Content-Location")      //  HttpHeaderContentLocation       = 15,   // entity-header  [section 7.1]
+ ,_T("Content-Md5")           //  HttpHeaderContentMd5            = 16,   // entity-header  [section 7.1]
+ ,_T("Content-Range")         //  HttpHeaderContentRange          = 17,   // entity-header  [section 7.1]
+ ,_T("Expires")               //  HttpHeaderExpires               = 18,   // entity-header  [section 7.1]
+ ,_T("Last-Modified")         //  HttpHeaderLastModified          = 19,   // entity-header  [section 7.1]
+ ,_T("Accept")                //  HttpHeaderAccept                = 20,   // request-header [section 5.3]
+ ,_T("Accept-Charset")        //  HttpHeaderAcceptCharset         = 21,   // request-header [section 5.3]
+ ,_T("Accept-Encoding")       //  HttpHeaderAcceptEncoding        = 22,   // request-header [section 5.3]
+ ,_T("Accept-Language")       //  HttpHeaderAcceptLanguage        = 23,   // request-header [section 5.3]
+ ,_T("Authorization")         //  HttpHeaderAuthorization         = 24,   // request-header [section 5.3]
+ ,_T("Cookie")                //  HttpHeaderCookie                = 25,   // request-header [not in rfc]
+ ,_T("Expect")                //  HttpHeaderExpect                = 26,   // request-header [section 5.3]
+ ,_T("From")                  //  HttpHeaderFrom                  = 27,   // request-header [section 5.3]
+ ,_T("Host")                  //  HttpHeaderHost                  = 28,   // request-header [section 5.3]
+ ,_T("If-Match")              //  HttpHeaderIfMatch               = 29,   // request-header [section 5.3]
+ ,_T("If-Modified-Since")     //  HttpHeaderIfModifiedSince       = 30,   // request-header [section 5.3]
+ ,_T("If-None-Match")         //  HttpHeaderIfNoneMatch           = 31,   // request-header [section 5.3]
+ ,_T("If-Range")              //  HttpHeaderIfRange               = 32,   // request-header [section 5.3]
+ ,_T("If-Unmodified-Since")   //  HttpHeaderIfUnmodifiedSince     = 33,   // request-header [section 5.3]
+ ,_T("Max-Forwards")          //  HttpHeaderMaxForwards           = 34,   // request-header [section 5.3]
+ ,_T("Proxy-Authorization")   //  HttpHeaderProxyAuthorization    = 35,   // request-header [section 5.3]
+ ,_T("Referer")               //  HttpHeaderReferer               = 36,   // request-header [section 5.3]
+ ,_T("Header-Range")          //  HttpHeaderRange                 = 37,   // request-header [section 5.3]
+ ,_T("Te")                    //  HttpHeaderTe                    = 38,   // request-header [section 5.3]
+ ,_T("Translate")             //  HttpHeaderTranslate             = 39,   // request-header [webDAV, not in RFC 2518]
+ ,_T("UserAgent")             //  HttpHeaderUserAgent             = 40,   // request-header [section 5.3]
 };
 
 // Known headers for a HTTP response from server back to the client 
@@ -1185,32 +1277,33 @@ static const char* all_headers[] =
 // Range 20-29 are only used in responses
 // Range 30-40 are never used in responses
 //
-static const char* all_responses[] =
+static LPCTSTR all_responses[] =
 {
-  "Accept-Ranges"         //  HttpHeaderAcceptRanges          = 20,   // response-header [section 6.2]
- ,"Header-Age"            //  HttpHeaderAge                   = 21,   // response-header [section 6.2]
- ,"Header-Etag"           //  HttpHeaderEtag                  = 22,   // response-header [section 6.2]
- ,"Location"              //  HttpHeaderLocation              = 23,   // response-header [section 6.2]
- ,"Proxy-Authenticate"    //  HttpHeaderProxyAuthenticate     = 24,   // response-header [section 6.2]
- ,"Retry-After"           //  HttpHeaderRetryAfter            = 25,   // response-header [section 6.2]
- ,"Server"                //  HttpHeaderServer                = 26,   // response-header [section 6.2]
- ,"Set-Cookie"            //  HttpHeaderSetCookie             = 27,   // response-header [not in rfc]
- ,"Header-Vary"           //  HttpHeaderVary                  = 28,   // response-header [section 6.2]
- ,"WWW-Authenticate"      //  HttpHeaderWwwAuthenticate       = 29,   // response-header [section 6.2]
+  _T("Accept-Ranges")         //  HttpHeaderAcceptRanges          = 20,   // response-header [section 6.2]
+ ,_T("Header-Age")            //  HttpHeaderAge                   = 21,   // response-header [section 6.2]
+ ,_T("Header-Etag")           //  HttpHeaderEtag                  = 22,   // response-header [section 6.2]
+ ,_T("Location")              //  HttpHeaderLocation              = 23,   // response-header [section 6.2]
+ ,_T("Proxy-Authenticate")    //  HttpHeaderProxyAuthenticate     = 24,   // response-header [section 6.2]
+ ,_T("Retry-After")           //  HttpHeaderRetryAfter            = 25,   // response-header [section 6.2]
+ ,_T("Server")                //  HttpHeaderServer                = 26,   // response-header [section 6.2]
+ ,_T("Set-Cookie")            //  HttpHeaderSetCookie             = 27,   // response-header [not in any RFC]
+ ,_T("Header-Vary")           //  HttpHeaderVary                  = 28,   // response-header [section 6.2]
+ ,_T("WWW-Authenticate")      //  HttpHeaderWwwAuthenticate       = 29,   // response-header [section 6.2]
 };
 
 // Finding a 'known' header on the current header line.
 int
-Request::FindKnownHeader(CString p_header)
+Request::FindKnownHeader(LPSTR p_header)
 {
+  USES_CONVERSION;
+  CString header(A2CT(p_header));
   // skip whitespace before and after the header name
-  p_header.Trim();
-  int len = p_header.GetLength();
+  header.Trim();
 
   // Find known header
   for(int ind = 0;ind < HttpHeaderRequestMaximum; ++ind)
   {
-    if(p_header.CompareNoCase(all_headers[ind]) == 0)
+    if(header.CompareNoCase(all_headers[ind]) == 0)
     {
       return ind;
     }
@@ -1225,9 +1318,10 @@ Request::FindKnownHeader(CString p_header)
 void
 Request::FindKeepAlive()
 {
-  CString connection = m_request.Headers.KnownHeaders[HttpHeaderConnection].pRawValue;
+  USES_CONVERSION;
+  CString connection = A2T((LPSTR)m_request.Headers.KnownHeaders[HttpHeaderConnection].pRawValue);
   connection.Trim();
-  m_keepAlive = connection.CompareNoCase("keep-alive") == 0;
+  m_keepAlive = connection.CompareNoCase(_T("keep-alive")) == 0;
 }
 
 // Reply with a client error in the range 400 - 499
@@ -1241,21 +1335,21 @@ Request::ReplyClientError(int p_error, CString p_errorText)
   bool retry = false;
 
   CString header;
-  header.Format("HTTP/1.1 %d %s\r\n",p_error,p_errorText);
-  header += "Content-Type: text/html; charset=us-ascii\r\n";
+  header.Format(_T("HTTP/1.1 %d %s\r\n"),p_error,p_errorText.GetString());
+  header += _T("Content-Type: text/html; charset=us-ascii\r\n");
 
   CString body;
   body.Format(http_client_error,p_error,p_errorText);
 
   if(m_challenge)
   {
-    header += "WWW-Authenticate: " + m_challenge + "\r\n";
+    header += _T("WWW-Authenticate: ") + m_challenge + _T("\r\n");
     m_challenge.Empty();
     retry   = true;
   }
 
-  header.AppendFormat("Content-Length: %d\r\n",body.GetLength());
-  header.AppendFormat("Date: %s\r\n", HTTPSystemTime());
+  header.AppendFormat(_T("Content-Length: %d\r\n"),body.GetLength());
+  header.AppendFormat(_T("Date: %s\r\n"),HTTPSystemTime().GetString());
   header += "\r\n";
   header += body;
 
@@ -1275,7 +1369,7 @@ Request::ReplyClientError(int p_error, CString p_errorText)
 void
 Request::ReplyClientError()
 {
-  ReplyClientError(HTTP_STATUS_BAD_REQUEST,"General client error");
+  ReplyClientError(HTTP_STATUS_BAD_REQUEST,_T("General client error"));
 }
 
 // Reply with a server error in the range 500-599
@@ -1288,15 +1382,15 @@ Request::ReplyServerError(int p_error,CString p_errorText)
 
   // The answer
   CString header;
-  header.Format("HTTP/1.1 %d %s\r\n", p_error, p_errorText);
-  header += "Content-Type: text/html; charset=us-ascii\r\n";
+  header.Format(_T("HTTP/1.1 %d %s\r\n"), p_error, p_errorText.GetString());
+  header += _T("Content-Type: text/html; charset=us-ascii\r\n");
 
   CString body;
   body.Format(http_server_error, p_error, p_errorText);
 
-  header.AppendFormat("Content-Length: %d\r\n", body.GetLength());
-  header.AppendFormat("Date: %s\r\n",HTTPSystemTime());
-  header += "\r\n";
+  header.AppendFormat(_T("Content-Length: %d\r\n"), body.GetLength());
+  header.AppendFormat(_T("Date: %s\r\n"),HTTPSystemTime().GetString());
+  header += _T("\r\n");
   header += body;
 
   // Write out to the client:
@@ -1312,7 +1406,7 @@ Request::ReplyServerError(int p_error,CString p_errorText)
 void
 Request::ReplyServerError()
 {
-  ReplyServerError(HTTP_STATUS_SERVER_ERROR,"General server error");
+  ReplyServerError(HTTP_STATUS_SERVER_ERROR,_T("General server error"));
 }
 
 // Copy the part of the first initial read to this read buffer
@@ -1371,20 +1465,26 @@ Request::CheckAuthentication()
 
   // This is our authorization (if any)
   CString authorization(m_request.Headers.KnownHeaders[HttpHeaderAuthorization].pRawValue);
+  if(authorization.IsEmpty())
+  {
+    // Authorization required but none is provided
+    return true;
+  }
 
   // Find method and payload of that method
   CString method;
   CString payload;
   SplitString(authorization,method,payload,' ');
 
-       if(method.CompareNoCase("Basic")     == 0)  info->AuthType = HttpRequestAuthTypeBasic;
-  else if(method.CompareNoCase("NTLM")      == 0)  info->AuthType = HttpRequestAuthTypeNTLM;
-  else if(method.CompareNoCase("Negotiate") == 0)  info->AuthType = HttpRequestAuthTypeNegotiate;
-  else if(method.CompareNoCase("Digest")    == 0)  info->AuthType = HttpRequestAuthTypeDigest;
-  else if(method.CompareNoCase("Kerberos")  == 0)  info->AuthType = HttpRequestAuthTypeKerberos;
+       if(method.CompareNoCase(_T("Basic"))     == 0)  info->AuthType = HttpRequestAuthTypeBasic;
+  else if(method.CompareNoCase(_T("NTLM"))      == 0)  info->AuthType = HttpRequestAuthTypeNTLM;
+  else if(method.CompareNoCase(_T("Negotiate")) == 0)  info->AuthType = HttpRequestAuthTypeNegotiate;
+  else if(method.CompareNoCase(_T("Digest"))    == 0)  info->AuthType = HttpRequestAuthTypeDigest;
+  else if(method.CompareNoCase(_T("Kerberos"))  == 0)  info->AuthType = HttpRequestAuthTypeKerberos;
   else
   {
     // Leave it to the serviced application to return a HTTP_STATUS_DENIED
+    // E.g. a "Bearer" token for OAuth2
     return false; 
   }
 
@@ -1419,16 +1519,22 @@ Request::GetAuthenticationInfoRecord()
   // Create AUTH_INFO object with defaults
   int size = ++m_request.RequestInfoCount;
   m_request.pRequestInfo = (PHTTP_REQUEST_INFO)realloc(m_request.pRequestInfo, size * sizeof(HTTP_REQUEST_INFO));
+  if(m_request.pRequestInfo)
+  {
+    m_request.pRequestInfo[number].InfoType   = HttpRequestInfoTypeAuth;
+    m_request.pRequestInfo[number].InfoLength = sizeof(HTTP_REQUEST_AUTH_INFO);
+    m_request.pRequestInfo[number].pInfo      = (PHTTP_REQUEST_AUTH_INFO)calloc(1, sizeof(HTTP_REQUEST_AUTH_INFO));
 
-  m_request.pRequestInfo[number].InfoType = HttpRequestInfoTypeAuth;
-  m_request.pRequestInfo[number].InfoLength = sizeof(HTTP_REQUEST_AUTH_INFO);
-  m_request.pRequestInfo[number].pInfo = (PHTTP_REQUEST_AUTH_INFO)calloc(1, sizeof(HTTP_REQUEST_AUTH_INFO));
+    if(m_request.pRequestInfo[number].pInfo)
+    {
+      PHTTP_REQUEST_AUTH_INFO info = (PHTTP_REQUEST_AUTH_INFO)m_request.pRequestInfo[number].pInfo;
+      info->AuthStatus = HttpAuthStatusNotAuthenticated;
+      info->AuthType   = HttpRequestAuthTypeNone;
 
-  PHTTP_REQUEST_AUTH_INFO info = (PHTTP_REQUEST_AUTH_INFO)m_request.pRequestInfo[number].pInfo;
-  info->AuthStatus = HttpAuthStatusNotAuthenticated;
-  info->AuthType   = HttpRequestAuthTypeNone;
-
-  return info;
+      return info;
+    }
+  }
+  return nullptr;
 }
 
 // See if we have a cached authentication token
@@ -1474,15 +1580,9 @@ bool
 Request::CheckBasicAuthentication(PHTTP_REQUEST_AUTH_INFO p_info,CString p_payload)
 {
   // Prepare decoding the base64 payload
-  CodeBase64 base;
-  int len = (int) base.Ascii_length(p_payload.GetLength());
-  CString decoded;
-  char* dest = decoded.GetBufferSetLength(len);
+  Base64  base;
+  CString decoded = base.Decrypt(p_payload);
 
-  // Decrypt into a string
-  base.Decrypt((const unsigned char*)p_payload.GetString(),p_payload.GetLength(),(unsigned char*)dest);
-  decoded.ReleaseBuffer();
-  
   // Split into user and password
   CString user;
   CString domain;
@@ -1519,13 +1619,12 @@ bool
 Request::CheckAuthenticationProvider(PHTTP_REQUEST_AUTH_INFO p_info,CString p_payload,CString p_provider)
 {
   // Prepare decoding the base64 payload
-  CodeBase64 base;
+  Base64 base;
   int len = (int)base.Ascii_length(p_payload.GetLength());
+  BYTE* buffer = new BYTE[len + 10];
 
-  // Decode in a buffer
-  unsigned char* buffer = new unsigned char[len + 1];
   // Decrypt into a string
-  base.Decrypt((const unsigned char*)p_payload.GetString(),p_payload.GetLength(),buffer);
+  len = base.Decrypt((BYTE*)p_payload.GetString(),p_payload.GetLength(),buffer,(len + 10));
 
   bool       continuation = false;
   CredHandle credentials;
@@ -1535,7 +1634,7 @@ Request::CheckAuthenticationProvider(PHTTP_REQUEST_AUTH_INFO p_info,CString p_pa
   ZeroMemory(&lifetime,sizeof(TimeStamp));
   DWORD      maxTokenLength = GetProviderMaxTokenLength(p_provider);
 
-  SECURITY_STATUS ss = AcquireCredentialsHandle(NULL,(LPSTR)p_provider.GetString(),SECPKG_CRED_INBOUND,NULL,NULL,NULL,NULL,&credentials,&lifetime);
+  SECURITY_STATUS ss = AcquireCredentialsHandle(NULL,(LPTSTR)p_provider.GetString(),SECPKG_CRED_INBOUND,NULL,NULL,NULL,NULL,&credentials,&lifetime);
   if(ss >= 0)
   {
     TimeStamp         lifetime;
@@ -1583,15 +1682,15 @@ Request::CheckAuthenticationProvider(PHTTP_REQUEST_AUTH_INFO p_info,CString p_pa
       // See if the return code has the SECURITY in the FACILITY position
       if(((ss >> 16) & 0xF) == FACILITY_SECURITY)
       {
+        USES_CONVERSION;
+
         // Continuation of the conversation
         len = (int) base.B64_length(OutSecBuff.cbBuffer);
-        unsigned char* challenge = new unsigned char[len + 1];
-        base.Encrypt((unsigned char*)pOut,OutSecBuff.cbBuffer,challenge);
-        challenge[len] = 0;
+        XString challenge = base.Encrypt((BYTE*)pOut,OutSecBuff.cbBuffer);
 
         // Send 401 with the correct provider challenge
-        m_challenge = p_provider + " " + challenge;
-        delete [] challenge;
+        m_challenge  = p_provider + _T(" ");
+        m_challenge += challenge;
         continuation = true;
       }
       else
@@ -1599,7 +1698,7 @@ Request::CheckAuthenticationProvider(PHTTP_REQUEST_AUTH_INFO p_info,CString p_pa
         // Possibly completion needed for the provider?
         if((SEC_I_COMPLETE_NEEDED == ss) || (SEC_I_COMPLETE_AND_CONTINUE == ss))
         {
-          ss = CompleteAuthToken(&m_context, &OutBuffDesc);
+          ss = CompleteAuthToken(&m_context,&OutBuffDesc);
         }
         // OK: We must be able to retrieve the impersonation token
         if(ss >= 0)
@@ -1642,7 +1741,7 @@ Request::GetProviderMaxTokenLength(CString p_provider)
 {
   PSecPkgInfo pkgInfo = nullptr;
 
-  SECURITY_STATUS ss = QuerySecurityPackageInfo((LPSTR)p_provider.GetString(),&pkgInfo);
+  SECURITY_STATUS ss = QuerySecurityPackageInfo((LPTSTR)p_provider.GetString(),&pkgInfo);
   if(ss == SEC_E_OK && pkgInfo)
   {
     DWORD size = pkgInfo->cbMaxToken;
@@ -1658,10 +1757,10 @@ void
 Request::AddResponseLine(CString& p_buffer,PHTTP_RESPONSE p_response)
 {
   // Send the initial response line of the server
-  p_buffer.Format("HTTP/%u.%u %d %s\r\n",p_response->Version.MajorVersion
-                                        ,p_response->Version.MinorVersion
-                                        ,p_response->StatusCode
-                                        ,p_response->pReason);
+  p_buffer.Format(_T("HTTP/%u.%u %d %s\r\n"),p_response->Version.MajorVersion
+                                            ,p_response->Version.MinorVersion
+                                            ,p_response->StatusCode
+                                            ,p_response->pReason);
 }
 
 // Add a server header (only if server header not yet set)
@@ -1678,7 +1777,7 @@ Request::CreateServerHeader(PHTTP_RESPONSE p_response)
     {
       if(p_response->Headers.KnownHeaders[HttpHeaderServer].pRawValue == nullptr)
       {
-        p_response->Headers.KnownHeaders[HttpHeaderServer].pRawValue = version;
+        p_response->Headers.KnownHeaders[HttpHeaderServer].pRawValue      = version;
         p_response->Headers.KnownHeaders[HttpHeaderServer].RawValueLength = (USHORT) strlen(version);
       }
     }
@@ -1693,9 +1792,9 @@ Request::AddAllKnownResponseHeaders(CString& p_buffer,PHTTP_KNOWN_HEADER p_heade
   {
     if(p_headers[index].pRawValue && strlen(p_headers[index].pRawValue) > 0)
     {
-      const char* name = index < HttpHeaderAcceptRanges ? all_headers[index] : all_responses[index - HttpHeaderAcceptRanges];
+      LPCTSTR name = index < HttpHeaderAcceptRanges ? all_headers[index] : all_responses[index - HttpHeaderAcceptRanges];
 
-      p_buffer.AppendFormat("%s: %s\r\n",name,p_headers[index].pRawValue);
+      p_buffer.AppendFormat(_T("%s: %s\r\n"),name,p_headers[index].pRawValue);
     }
   }
 }
@@ -1706,7 +1805,7 @@ Request::AddAllUnknownResponseHeaders(CString& p_buffer,PHTTP_UNKNOWN_HEADER p_h
 {
   for(int index = 0; index < p_count; ++index)
   {
-    p_buffer.AppendFormat("%s: %s\r\n",p_headers[index].pName,p_headers[index].pRawValue);
+    p_buffer.AppendFormat(_T("%s: %s\r\n"),p_headers[index].pName,p_headers[index].pRawValue);
   }
 }
 
@@ -1722,7 +1821,7 @@ Request::SendEntityChunk(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
     case HttpDataChunkFromFragmentCache:  return SendEntityChunkFromFragment  (p_chunk,p_bytes);
     case HttpDataChunkFromFragmentCacheEx:return SendEntityChunkFromFragmentEx(p_chunk,p_bytes);
     default:                              // Log the error
-                                          LogError("Wrong data chunk type for connection: %s",m_request.pRawUrl);
+                                          LogError(_T("Wrong data chunk type for connection: %s"),m_request.pRawUrl);
                                           return ERROR_INVALID_PARAMETER;
   }
 }
@@ -1740,68 +1839,10 @@ Request::SendEntityChunkFromMemory(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
   return result;
 }
 
-// Sending one (1) file from opened file handle in the chunk to the socket
-// int
-// Request::SendEntityChunkFromFile(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
-// {
-//   if(m_listener->GetSecureMode())
-//   {
-//     return SendFileByMemoryBlocks(p_chunk, p_bytes);
-//   }
-//   else
-//   {
-//     return SendFileByTransmitFunction(p_chunk, p_bytes);
-//   }
-// }
-// 
-// int
-// Request::SendFileByTransmitFunction(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
-// {
-//   SOCKET actual = reinterpret_cast<PlainSocket*>(m_socket)->GetActualSocket();
-//   PointTransmitFile transmit = m_queue->GetTransmitFile(actual);
-// 
-//   DWORD high = 0;
-//   DWORD size = GetFileSize(p_chunk->FromFileHandle.FileHandle,&high);
-// 
-//   // But we restrict on this much if possible
-//   if(p_chunk->FromFileHandle.ByteRange.Length.LowPart > 0 && 
-//      p_chunk->FromFileHandle.ByteRange.Length.LowPart < size)
-//   {
-//     size = p_chunk->FromFileHandle.ByteRange.Length.LowPart;
-//   }
-// 
-//   if(transmit)
-//   {
-//     if((*transmit)(actual
-//                   ,p_chunk->FromFileHandle.FileHandle
-//                   ,(DWORD)p_chunk->FromFileHandle.ByteRange.Length.LowPart
-//                   ,0
-//                   ,NULL
-//                   ,NULL
-//                   ,TF_DISCONNECT) == FALSE)
-//     {
-//       int error = WSAGetLastError();
-//       LogError("Error while sending a file: %d", error);
-//       return error;
-//     }
-//   }
-//   else
-//   {
-//     LogError("Could not send a file. Injected 'TransmitFile' functionality not found");
-//     return ERROR_CONNECTION_ABORTED;
-//   }
-// 
-//   // Record the fact that we have written this much
-//   m_bytesWritten += size;
-//   *p_bytes       += size;
-// 
-//   return NO_ERROR;
-// }
-
 int
 Request::SendEntityChunkFromFile(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
 {
-  char buffer[MESSAGE_BUFFER_LENGTH];
+  char buffer[FILE_BUFFER_LENGTH];
 
   // Getting the total file size
   DWORD fhigh = 0;
@@ -1835,8 +1876,8 @@ Request::SendEntityChunkFromFile(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
   while(size < length)
   {
     // Calculate next block size
-    ULONG blocksize = MESSAGE_BUFFER_LENGTH;
-    if((ULONG)(length - size) < MESSAGE_BUFFER_LENGTH)
+    ULONG blocksize = FILE_BUFFER_LENGTH;
+    if((ULONG)(length - size) < FILE_BUFFER_LENGTH)
     {
       blocksize = (ULONG)(length - size);
     }
@@ -1883,7 +1924,7 @@ Request::SendEntityChunkFromFragment(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
     return SendEntityChunkFromMemory(chunk,p_bytes);
   }
   // Log error : Chunk not found
-  LogError("Data chunk [%s] not found",prefix);
+  LogError(_T("Data chunk [%s] not found"),prefix);
   return ERROR_INVALID_PARAMETER;
 }
 
@@ -1915,24 +1956,40 @@ Request::SendEntityChunkFromFragmentEx(PHTTP_DATA_CHUNK p_chunk,PULONG p_bytes)
       }
       return result;
     }
-    LogError("Data chunk [%s] out of range",prefix);
+    LogError(_T("Data chunk [%s] out of range"),prefix);
     return ERROR_RANGE_NOT_FOUND;
   }
   // Log error : Chunk not found
-  LogError("Data chunk [%s] not found",prefix);
+  LogError(_T("Data chunk [%s] not found"),prefix);
   return ERROR_INVALID_PARAMETER;
 }
 
-const char* weekday_short[7] =
+LPCTSTR weekday_short[7] =
 {
-  "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
+   _T("Sun")
+  ,_T("Mon")
+  ,_T("Tue")
+  ,_T("Wed")
+  ,_T("Thu")
+  ,_T("Fri")
+  ,_T("Sat")
 };
 
-const char* month[12] =
+LPCTSTR month[12] =
 {
-  "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
+   _T("Jan")
+  ,_T("Feb")
+  ,_T("Mar")
+  ,_T("Apr")
+  ,_T("May")
+  ,_T("Jun")
+  ,_T("Jul")
+  ,_T("Aug")
+  ,_T("Sep")
+  ,_T("Oct")
+  ,_T("Nov")
+  ,_T("Dec")
 };
-
 
 // Print HTTP time in RFC 1123 format (Preferred standard)
 // as in "Tue, 8 Dec 2015 21:26:32 GMT"
@@ -1943,7 +2000,7 @@ Request::HTTPSystemTime()
   SYSTEMTIME systemtime;
   GetSystemTime(&systemtime);
 
-  time.Format("%s, %02d %s %04d %2.2d:%2.2d:%2.2d GMT"
+  time.Format(_T("%s, %02d %s %04d %2.2d:%2.2d:%2.2d GMT")
              ,weekday_short[systemtime.wDayOfWeek]
              ,systemtime.wDay
              ,month[systemtime.wMonth - 1]
@@ -1965,12 +2022,16 @@ Request::HTTPSystemTime()
 int
 Request::ReadBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes)
 {
+  if(m_socket == nullptr)
+  {
+    return SOCKET_ERROR;
+  }
   int result = m_socket->RecvPartial(p_buffer,p_size);
   if (result == SOCKET_ERROR)
   {
     // Log the error
     int error = WSAGetLastError();
-    LogError("Reading from connection: %s Error: %d",m_request.pRawUrl,error);
+    LogError(_T("Reading from connection: %s Error: %d"),m_request.pRawUrl,error);
     return error;
   }
 
@@ -1985,12 +2046,16 @@ Request::ReadBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes)
 int
 Request::WriteBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes)
 {
+  if(m_socket == nullptr)
+  {
+    return SOCKET_ERROR;
+  }
   int result = m_socket->SendPartial(p_buffer,p_size);
   if (result == SOCKET_ERROR)
   {
     // Log the error
     int error = WSAGetLastError();
-    LogError("Writing to connection: %s Error: %d", m_request.pRawUrl,error);
+    LogError(_T("Writing to connection: %s Error: %d"), m_request.pRawUrl,error);
     return error;
   }
 
@@ -2010,3 +2075,37 @@ Request::WriteBuffer(PVOID p_buffer,ULONG p_size,PULONG p_bytes)
 
   return NO_ERROR;;
 }
+
+// Register the fact that the request starts a WebSocket
+void
+Request::CreateWebSocket()
+{
+  // Are we starting a WebSocket?
+  if(m_websocketKey.IsEmpty())
+  {
+    return;
+  }
+
+  // See if it was already defined earlier
+  // It might be a reconnect attempt
+  SYSWebSocket* existing = m_queue->FindWebSocket(m_websocketKey);
+  if(existing)
+  {
+    // Remember the old one
+    Request* oldRequest = m_websocket->GetRequest();
+
+    // Send acknowledgment back
+    m_websocket = existing;
+    m_queue->ReconnectWebsocket(m_websocketKey,m_websocket);
+
+    // Ready with the previous request
+    m_queue->RemoveRequest(oldRequest);
+  }
+  else
+  {
+    // Register new socket
+    m_websocket = new SYSWebSocket(this);
+    m_queue->AddWebSocket(m_websocketKey,m_websocket);
+  }
+}
+

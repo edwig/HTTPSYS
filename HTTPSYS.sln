@@ -1,9 +1,20 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.28307.106
+# Visual Studio Version 17
+VisualStudioVersion = 17.12.35527.113
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "HTTPSYS", "HTTPSYS\HTTPSYS.vcxproj", "{F044F689-FE32-4D06-8873-824417F9060E}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "BaseLibrary", "BaseLibrary\BaseLibrary.vcxproj", "{2364C44B-2E4D-4631-A050-B47509AFBC82}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{47C94663-0A1C-4C3B-9755-A20F88E8374A}"
+	ProjectSection(SolutionItems) = preProject
+		.gitignore = .gitignore
+		LICENSE = LICENSE
+		Planning.md = Planning.md
+		Documentation\Releasenotes.txt = Documentation\Releasenotes.txt
+		sourceclean.cmd = sourceclean.cmd
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,6 +32,14 @@ Global
 		{F044F689-FE32-4D06-8873-824417F9060E}.Release|x64.Build.0 = Release|x64
 		{F044F689-FE32-4D06-8873-824417F9060E}.Release|x86.ActiveCfg = Release|Win32
 		{F044F689-FE32-4D06-8873-824417F9060E}.Release|x86.Build.0 = Release|Win32
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Debug|x64.ActiveCfg = Debug|x64
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Debug|x64.Build.0 = Debug|x64
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Debug|x86.ActiveCfg = Debug|Win32
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Debug|x86.Build.0 = Debug|Win32
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Release|x64.ActiveCfg = Release|x64
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Release|x64.Build.0 = Release|x64
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Release|x86.ActiveCfg = Release|Win32
+		{2364C44B-2E4D-4631-A050-B47509AFBC82}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,6 +1,12 @@
 HTTPSYS: User-space implementation of HTTP.SYS
 ==============================================
 
+Version 1.1.0 dd 27-12-2024
+---------------------------
+1)  Implementation of asynchroneous I/O with IOCP (I/O Completion Ports)
+2)  Implementation of websockets for the async MarlinServer
+3)  Synced with the Marlin project
+
 Version 1.0.4 dd 31-12-2018
 ---------------------------
 1) Changed RequestQueue handle to a real HANDLE. In preparation of Async I/O

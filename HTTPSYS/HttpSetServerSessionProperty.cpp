@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -11,6 +11,8 @@
 #include "http_private.h"
 #include "ServerSession.h"
 #include "RequestQueue.h"
+#include "OpaqueHandles.h"
+#include <ConvertWideString.h>
 #include <string>
 
 #ifdef _DEBUG
@@ -21,6 +23,7 @@ static char THIS_FILE[] = __FILE__;
 
 using std::wstring;
 
+// Forward declarations of status functions
 ULONG SetServerState         (ServerSession* p_session,PVOID p_info,ULONG p_length);
 ULONG SetServerTimeouts      (ServerSession* p_session,PVOID p_info,ULONG p_length);
 ULONG SetServerAuthentication(ServerSession* p_session,PVOID p_info,ULONG p_length);
@@ -33,13 +36,16 @@ HttpSetServerSessionProperty(IN HTTP_SERVER_SESSION_ID  ServerSessionId
                             ,IN ULONG                   PropertyInformationLength)
 {
   // See if we have minimal parameters
-  if(ServerSessionId == NULL || PropertyInformation == nullptr)
+  if(PropertyInformation == nullptr)
   {
     return ERROR_INVALID_PARAMETER;
   }
-
   // Grab our session
-  ServerSession* session = reinterpret_cast<ServerSession*>(ServerSessionId);
+  ServerSession* session = g_handles.GetSessionFromOpaqueHandle(ServerSessionId);
+  if(session == nullptr)
+  {
+    return ERROR_INVALID_PARAMETER;
+  }
 
   switch(Property)
   {
@@ -109,8 +115,6 @@ SetServerAuthentication(ServerSession* p_session,PVOID p_info,ULONG p_length)
     return ERROR_INVALID_PARAMETER;
   }
 
-  USES_CONVERSION;
-
   ULONG   scheme    = info->AuthSchemes;
   bool    ntlmcache = !(info->DisableNTLMCredentialCaching);
   CString domain;
@@ -133,14 +137,26 @@ SetServerAuthentication(ServerSession* p_session,PVOID p_info,ULONG p_length)
   // Getting domain and realm
   if(scheme & HTTP_AUTH_ENABLE_DIGEST)
   {
-    domain = W2A(info->DigestParams.DomainName);
+#ifdef _UNICODE
+    domain = info->DigestParams.DomainName;
+    realm  = info->DigestParams.Realm;
+#else
+    bool foundBom;
+    TryConvertWideString((const BYTE*)info->DigestParams.DomainName,info->DigestParams.DomainNameLength,_T(""),domain,foundBom);
+    TryConvertWideString((const BYTE*)info->DigestParams.Realm,     info->DigestParams.RealmLength,     _T(""),realm, foundBom);
+#endif
     domainWide = info->DigestParams.DomainName;
-    realm  = W2A(info->DigestParams.Realm);
     realmWide  = info->DigestParams.Realm;
   }
+
   if(scheme & HTTP_AUTH_ENABLE_BASIC)
   {
-    realm = W2A(info->BasicParams.Realm);
+#ifdef _UNICODE
+    realm = info->BasicParams.Realm;
+#else
+    bool foundBom;
+    TryConvertWideString((const BYTE*)info->DigestParams.Realm,info->DigestParams.RealmLength,_T(""),realm,foundBom);
+#endif
     realmWide = info->BasicParams.Realm;
   }
 
@@ -148,3 +164,4 @@ SetServerAuthentication(ServerSession* p_session,PVOID p_info,ULONG p_length)
   p_session->SetAuthentication(scheme,domain,realm,domainWide,realmWide,ntlmcache);
   return NO_ERROR;
 }
+

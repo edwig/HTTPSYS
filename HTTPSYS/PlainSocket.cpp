@@ -13,13 +13,17 @@
 #include <MSTcpIP.h>
 #include "PlainSocket.h"
 #include "Logging.h"
+#include <LogAnalysis.h>
 #include <mswsock.h>
+#include <intsafe.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
 #endif
+
+void WINAPI PlainSocketOverlappedResult(void* p_overlapped);
 
 // Constructor for an active connection, socket created later
 PlainSocket::PlainSocket(HANDLE p_stopEvent)
@@ -86,7 +90,7 @@ PlainSocket::Initialize()
 	
   if(m_read_event == WSA_INVALID_EVENT || m_write_event == WSA_INVALID_EVENT)
   {
-    throw "WSACreateEvent failed";
+    throw _T("WSACreateEvent failed");
   }
 
   // Set socket options for TCP/IP
@@ -98,10 +102,15 @@ PlainSocket::Initialize()
 
 // Find connection type (AF_INET (IPv4) or AF_INET6 (IPv6))
 int
-PlainSocket::FindConnectType(LPCTSTR p_host,char* p_portname)
+PlainSocket::FindConnectType(LPCTSTR p_host,LPCTSTR p_portname)
 {
-  ADDRINFO  hints;
-  ADDRINFO* result;
+#ifdef _UNICODE
+  ADDRINFOW  hints;
+  ADDRINFOW* result;
+#else
+  ADDRINFOA  hints;
+  ADDRINFOA* result;
+#endif
   memset(&hints,0,sizeof(ADDRINFO));
   int type = AF_INET;
 
@@ -110,7 +119,7 @@ PlainSocket::FindConnectType(LPCTSTR p_host,char* p_portname)
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = IPPROTO_TCP;
 
-  DWORD retval = getaddrinfo(p_host,p_portname,&hints,&result);
+  DWORD retval = GetAddrInfo(p_host,p_portname,&hints,&result);
   if(retval == 0)
   {
     if((result->ai_family == AF_INET6) ||
@@ -118,12 +127,12 @@ PlainSocket::FindConnectType(LPCTSTR p_host,char* p_portname)
     {
       type = result->ai_family;
     }
-    freeaddrinfo(result);
+    FreeAddrInfo(result);
   }
   else
   {
     // MESS_INETTYPE 
-    LogError("Cannot determine if internet is of type IP4 or IP6");
+    LogError(_T("Cannot determine if internet is of type IP4 or IP6"));
   }
   // Assume it's IP4 as a default
   return type;
@@ -137,7 +146,7 @@ PlainSocket::Connect(LPCTSTR p_hostName, USHORT p_portNumber)
 	SOCKADDR_STORAGE remoteAddr = {0};
 	DWORD sizeLocalAddr  = sizeof(localAddr);
 	DWORD sizeRemoteAddr = sizeof(remoteAddr);
-	char  portName[10]   = {0};
+	TCHAR portName[10]   = {0};
   BOOL    bSuccess     = FALSE;
 	timeval timeout      = {0};
   int     result       = 0;
@@ -148,14 +157,14 @@ PlainSocket::Connect(LPCTSTR p_hostName, USHORT p_portNumber)
   }
 
   // Convert port number and find IPv4 or IPv6
-  _itoa_s(p_portNumber, portName, _countof(portName), 10);
+  _itot_s(p_portNumber, portName, _countof(portName), 10);
   int type = FindConnectType(p_hostName,portName);
 
   // Create the actual physical socket
 	m_actualSocket = socket(type, SOCK_STREAM, 0);
 	if (m_actualSocket == INVALID_SOCKET)
   {
-		LogError("Socket failed with error: %d\n", WSAGetLastError());
+		LogError(_T("Socket failed with error: %d\n"), WSAGetLastError());
 		return false;
 	}
 
@@ -164,14 +173,14 @@ PlainSocket::Connect(LPCTSTR p_hostName, USHORT p_portNumber)
 	CTime Now = CTime::GetCurrentTime();
 
   USES_CONVERSION;
-  std::wstring hostname = A2CW(p_hostName);
-  std::wstring portname = A2CW(portName);
+  std::wstring hostname = T2CW(p_hostName);
+  std::wstring portname = T2CW(portName);
 
 	// Note that WSAConnectByName requires Vista or Server 2008
   // Note that WSAConnectByNameA is deprecated, so we convert to the Unicode counterpart.
 	bSuccess = WSAConnectByNameW(m_actualSocket
-                              ,(LPWSTR) hostname.c_str()
-                              ,(LPWSTR) portname.c_str()
+                              ,(LPWSTR)hostname.c_str()
+                              ,(LPWSTR)portname.c_str()
                               ,&sizeLocalAddr
                               ,(SOCKADDR*)&localAddr
                               ,&sizeRemoteAddr
@@ -183,7 +192,7 @@ PlainSocket::Connect(LPCTSTR p_hostName, USHORT p_portNumber)
 	if (!bSuccess)
   {
 		m_lastError = WSAGetLastError();
-		LogError("**** WSAConnectByName Error %d connecting to \"%s\" (%s)", 
+		LogError(_T("**** WSAConnectByName Error %d connecting to \"%s\" (%s)"),
 				     m_lastError,
 				     p_hostName, 
 				     portName);
@@ -191,14 +200,14 @@ PlainSocket::Connect(LPCTSTR p_hostName, USHORT p_portNumber)
 		return false;       
 	}
 
-  DebugMsg("Connection made in %ld second(s)",HowLong.GetTotalSeconds());
+  DebugMsg(_T("Connection made in %ld second(s)"),HowLong.GetTotalSeconds());
 
   // Activate previously set options
 	result = setsockopt(m_actualSocket, SOL_SOCKET,SO_UPDATE_CONNECT_CONTEXT, NULL, 0);
 	if (result == SOCKET_ERROR)
   {
 		m_lastError = WSAGetLastError();
-		LogError("setsockopt for SO_UPDATE_CONNECT_CONTEXT failed with error: %d", m_lastError);
+		LogError(_T("setsockopt for SO_UPDATE_CONNECT_CONTEXT failed with error: %d"), m_lastError);
 		closesocket(m_actualSocket);
 		return false;       
 	}
@@ -228,7 +237,7 @@ bool PlainSocket::ActivateKeepalive()
 	if (iResult == SOCKET_ERROR)
   {
 		m_lastError = WSAGetLastError();
-		LogError("Setsockopt for SO_KEEPALIVE failed with error: %d\n",m_lastError);
+		LogError(_T("Setsockopt for SO_KEEPALIVE failed with error: %d\n"),m_lastError);
 		closesocket(m_actualSocket);
     m_actualSocket = NULL;
 		return false;       
@@ -254,7 +263,7 @@ bool PlainSocket::ActivateKeepalive()
                 ,nullptr) != 0)   // Completion routine
     {
       m_lastError = WSAGetLastError() ;
-      LogError("WSAIoctl to set keep-alive failed with error: %d\n", m_lastError);
+      LogError(_T("WSAIoctl to set keep-alive failed with error: %d\n"), m_lastError);
       closesocket(m_actualSocket);
       m_actualSocket = NULL;
       return false;       
@@ -269,6 +278,20 @@ HRESULT
 PlainSocket::InitializeSSL(const void* /*p_buffer*/ /*= nullptr*/,const int /*p_length*/ /*= 0*/)
 {
   return SOCKET_ERROR;
+}
+
+// Connect to the threadpool of the server
+void
+PlainSocket::AssociateThreadPool(HANDLE p_threadPoolIOCP)
+{
+  p_threadPoolIOCP = CreateIoCompletionPort((HANDLE)m_actualSocket,p_threadPoolIOCP,(ULONG_PTR)PlainSocketOverlappedResult,0);
+  if(!p_threadPoolIOCP)
+  {
+    DWORD error = GetLastError();
+    LogError(_T("Threadpool cannot register file handle for asynchroneous I/O completion. Error: %d"),error);
+  }
+
+  SetFileCompletionNotificationModes((HANDLE)m_actualSocket,FILE_SKIP_SET_EVENT_ON_HANDLE);
 }
 
 void PlainSocket::SetConnTimeoutSeconds(int p_newTimeoutSeconds)
@@ -356,13 +379,35 @@ DWORD PlainSocket::GetLastError()
 	return m_lastError; 
 }
 
+bool
+PlainSocket::InputQueueHasWaitingData()
+{
+  ULONG bytes    = 0;
+  DWORD returned = 0;
+  if(WSAIoctl(m_actualSocket,FIONREAD,nullptr,0,&bytes,sizeof(ULONG),&returned,nullptr,nullptr) == 0)
+  {
+    // <bytes> data is available for reading on the socket
+    if(bytes > 0)
+    {
+      return true;
+    }
+  }
+  if(WSAIoctl(m_actualSocket,SIOCATMARK,nullptr,0,&bytes,0,&returned,nullptr,nullptr) == 0)
+  {
+    // OOB (Out-Of-Band) data is available (read position is not at the end mark)
+    return true;
+  }
+  return false;
+}
+
 // Shutdown one of the sides of the socket, or both
 int 
 PlainSocket::Disconnect(int p_how)
 {
   if(m_actualSocket)
   {
-    return ::shutdown(m_actualSocket, p_how);
+    // Only shutdown one side
+    return ::shutdown(m_actualSocket,p_how);
   }
   return NO_ERROR;
 }
@@ -380,12 +425,11 @@ PlainSocket::Close(void)
   if(m_initDone)
   {
     // Shutdown both sides of the socket
-    if(Disconnect(SD_SEND) != 0)
+    if(shutdown(m_actualSocket,SD_BOTH) != 0)
     {
 		  m_lastError = ::WSAGetLastError();
-		  return false;
 	  }
-
+    // And then close it directly
     if(closesocket(m_actualSocket))
     {
       // Log the error
@@ -493,8 +537,8 @@ PlainSocket::RecvPartial(LPVOID p_buffer, const ULONG p_length)
 		{
       if(!InSecureMode())
       {
-        DebugMsg(" ");
-        DebugMsg("Received message has %d bytes",bytes_read);
+        DebugMsg(_T(" "));
+        DebugMsg(_T("Received message has %d bytes"),bytes_read);
         PrintHexDump(bytes_read,p_buffer);
       }
 
@@ -522,6 +566,122 @@ PlainSocket::RecvPartial(LPVOID p_buffer, const ULONG p_length)
 	return SOCKET_ERROR;
 }
 
+void WINAPI PlainSocketOverlappedResult(void* p_overlapped)
+{
+  _set_se_translator(SeTranslator);
+  try
+  {
+    LPOVERLAPPED overlapped = reinterpret_cast<LPOVERLAPPED>(p_overlapped);
+
+    PlainSocket* socket = reinterpret_cast<PlainSocket*>(overlapped->Pointer);
+    if(socket)
+    {
+      // See if we are still a socket. Read/write process stops here!
+      if(IsBadReadPtr(socket,sizeof(PlainSocket*)) || socket->m_ident != SOCKETSTREAM_IDENT)
+      {
+        return;
+      }
+      if(overlapped->hEvent == (HANDLE)SD_SEND)
+      {
+        socket->SendingOverlapped((DWORD)overlapped->Internal,(DWORD)overlapped->InternalHigh,0);
+      }
+      else // SD_RECEIVE
+      {
+        socket->ReceiveOverlapped((DWORD)overlapped->Internal,(DWORD)overlapped->InternalHigh,0);
+      }
+    }
+    else
+    {
+      // We've gotten something for this socket, but the overlapped structure is not ours
+      // Most likely it's a TCP/IP frame for keep-alive or some other bookkeeping
+      // Mark the structure, so the cleanup routine in the threadpool will not crash on it.
+      overlapped->Internal = 0xDEADBEAF;
+      TRACE("OTHER IOCP Action on websocket\n");
+    }
+  }
+  catch(StdException& /*ex*/)
+  {
+    // Socket is already dead
+    // Most probably the socket is already closed
+    // and we have a race condition here.
+  }
+}
+
+// Receives up to   p_length bytes of data with an OVERLAPPED callback
+int   
+PlainSocket::RecvPartialOverlapped(LPVOID p_buffer, const ULONG p_length,LPOVERLAPPED p_overlapped)
+{
+	WSABUF    buffer;
+  DWORD			bytes_read = 0;
+  DWORD     msg_flags  = 0;
+	int       received   = 0;
+
+  // Not using timeout on overlapped I/O
+  // The intended use is to NOT wait and return immediately
+  m_recvEndTime = 0;
+
+  // Overlapped I/O from caller
+  m_readOverlapped = p_overlapped;
+
+  // We will be reading into this external buffer
+  m_receiveBuffer = p_buffer;
+
+  // Normal case, the last read completed normally, now we're reading again
+	// Setup the buffers array
+	buffer.buf = static_cast<char*>(p_buffer);
+	buffer.len = p_length;
+	
+	// Create the overlapped I/O event and structures
+	memset(&m_overReading,0,sizeof(OVERLAPPED));
+  m_overReading.Pointer = this;
+  m_overReading.hEvent  = (HANDLE) SD_RECEIVE;
+	received    = WSARecv(m_actualSocket,&buffer,1,&bytes_read,&msg_flags,&m_overReading,nullptr);
+	m_lastError = WSAGetLastError();
+
+  if(m_lastError == 0 || m_lastError == WSA_IO_PENDING)  // Read in progress, normal case
+	{
+    TRACE("PlainSocket: WSA_IO_PENDING Succeeded for RECEIVE\n");
+    return NO_ERROR;
+	}
+  TRACE("PlainSocket: FAILED IOCP!\n");
+
+  // See if already received in-sync
+  if(received > 0)
+  {
+    ReceiveOverlapped(m_lastError,bytes_read,msg_flags);
+    return received;
+  }
+  return SOCKET_ERROR;
+}
+
+void
+PlainSocket::ReceiveOverlapped(DWORD dwError,DWORD cbTransferred,DWORD dwFlags)
+{
+  TRACE("PLAINSOCKET RECEIVE OVERLAPPED\n");
+
+  if(!InSecureMode())
+  {
+    DebugMsg(_T(" "));
+    DebugMsg(_T("Received message has %d bytes"),cbTransferred);
+    PrintHexDump(cbTransferred,m_receiveBuffer);
+  }
+  if(m_readOverlapped)
+  {
+    PFN_SOCKET_COMPLETION completion = reinterpret_cast<PFN_SOCKET_COMPLETION>(m_readOverlapped->hEvent);
+    m_readOverlapped->Internal     = dwError;
+    m_readOverlapped->InternalHigh = cbTransferred;
+    if(completion && (dwError || cbTransferred))
+    {
+      (*completion)(m_readOverlapped);
+    }
+    else
+    {
+      // Some other event that we ignore
+      TRACE("Plainsocket: ignored read completion event\n");
+    }
+  }
+}
+
 // Receives exactly Len bytes of data and returns the amount received - or SOCKET_ERROR if it times out
 int PlainSocket::RecvMsg(LPVOID p_buffer, const ULONG p_length)
 {
@@ -545,7 +705,7 @@ int PlainSocket::RecvMsg(LPVOID p_buffer, const ULONG p_length)
     {
       total_bytes_received += bytes_received;
     }
-	}; // loop
+	} // loop
 	return (total_bytes_received);
 }
 
@@ -563,8 +723,8 @@ int PlainSocket::SendPartial(LPCVOID p_buffer, const ULONG p_length)
 
   if(!InSecureMode())
   {
-    DebugMsg(" ");
-    DebugMsg("Send message has %d bytes",p_length);
+    DebugMsg(_T(" "));
+    DebugMsg(_T("Send message has %d bytes"),p_length);
     PrintHexDump(p_length,p_buffer);
   }
 
@@ -614,6 +774,71 @@ int PlainSocket::SendPartial(LPCVOID p_buffer, const ULONG p_length)
 		}
 	}
 	return SOCKET_ERROR;
+}
+
+// Sends up to p_length bytes of data with an OVERLAPPED callback
+int
+PlainSocket::SendPartialOverlapped(LPVOID p_buffer,const ULONG p_length,LPOVERLAPPED p_overlapped)
+{
+	WSABUF    buffer;
+  DWORD			bytes_sent = 0;
+  DWORD     msg_flags  = 0;
+	int       written    = 0;
+
+  // Not using timeout on overlapped I/O
+  // The intended use is to NOT wait and return immediately
+  m_sendEndTime = 0;
+
+  // Overlapped I/O from caller
+  m_sendOverlapped = p_overlapped;
+
+  // We will be reading into this external buffer
+  m_sendingBuffer = p_buffer;
+
+  // Normal case, the last sent completed normally, now we're sending again
+	// Setup the buffers array
+	buffer.buf = static_cast<char*>(p_buffer);
+	buffer.len = p_length;
+	
+	// Create the overlapped I/O event and structures
+	memset(&m_overSending,0,sizeof(OVERLAPPED));
+  m_overReading.Pointer = this;
+  m_overReading.hEvent  = (HANDLE) SD_SEND;
+	written     = WSASend(m_actualSocket,&buffer,1,&bytes_sent,msg_flags,&m_overSending,nullptr);
+	m_lastError = WSAGetLastError();
+
+  if(m_lastError == 0 || m_lastError == WSA_IO_PENDING)  // write  in progress, normal case
+	{
+    TRACE("PlainSocket: WSA_IO_PENDING Succeeded for SEND\n");
+    return NO_ERROR;
+	}
+  TRACE("PlainSocket: FAILED IOCP!\n");
+
+  // See if already received in-sync
+  if(written > 0)
+  {
+    SendingOverlapped(m_lastError,bytes_sent,msg_flags);
+    return written;
+  }
+  return SOCKET_ERROR;
+}
+
+void
+PlainSocket::SendingOverlapped(DWORD dwError,DWORD cbTransferred,DWORD dwFlags)
+{
+  if(!InSecureMode())
+  {
+    DebugMsg(_T(" "));
+    DebugMsg(_T("Sending message has %d bytes"),cbTransferred);
+    PrintHexDump(cbTransferred,m_sendingBuffer);
+  }
+  if(m_sendOverlapped)
+  {
+    PFN_SOCKET_COMPLETION completion = reinterpret_cast<PFN_SOCKET_COMPLETION>(m_sendOverlapped->hEvent);
+    m_sendOverlapped->Internal     = dwError;
+    m_sendOverlapped->InternalHigh = cbTransferred;
+    (*completion)(m_sendOverlapped);
+  }
 }
 
 // sends all the data or returns a timeout

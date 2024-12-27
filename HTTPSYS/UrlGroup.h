@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -29,7 +29,7 @@ public:
 
   // FUNCTIONS
   ULONG AddUrlPrefix(CString pFullyQualifiedUrl,HTTP_URL_CONTEXT UrlContext);
-  ULONG DelUrlPrefix(CString pFullyQualifiedUrl,ULONG p_flags);
+  ULONG DelUrlPrefix(HTTP_URL_GROUP_ID p_handle,CString pFullyQualifiedUrl,ULONG p_flags);
   ULONG NumberOfPorts (USHORT p_port);
   URL*  FindLongestURL(USHORT p_port,CString p_abspath,int& p_length);
 
@@ -65,15 +65,15 @@ public:
   wstring             GetAuthenticationRealmWide()  { return m_realmWide;               };
 
 private:
-  int                 SegmentedCompare(const char* p_left,const char* p_right);
+  int                 SegmentedCompare(LPCTSTR p_left,LPCTSTR p_right);
   bool                UrlIsRegistered(CString p_prefix);
   bool                GetURLSettings(URL& p_url);
 
   // Primary identity
-  ULONGLONG          m_ident { HTTP_URLGROUP_IDENT };
-  ServerSession*     m_session;
-  RequestQueue*      m_queue { NULL };
-  HTTP_ENABLED_STATE m_state;
+  ULONGLONG          m_ident    { HTTP_URLGROUP_IDENT    };
+  ServerSession*     m_session  { nullptr };
+  RequestQueue*      m_queue    { NULL    };
+  HTTP_ENABLED_STATE m_state    { HttpEnabledStateActive };
   // Timeouts
   USHORT             m_timeoutEntityBody        { URL_TIMEOUT_ENTITY_BODY     };
   USHORT             m_timeoutDrainEntityBody   { URL_TIMEOUT_DRAIN_BODY      };
@@ -93,21 +93,3 @@ private:
   // Locking
   CRITICAL_SECTION   m_lock;
 };
-
-inline UrlGroup*
-GetUrlGroupFromHandle(HTTP_URL_GROUP_ID p_handle)
-{
-  try
-  {
-    UrlGroup* group = reinterpret_cast<UrlGroup*>(p_handle);
-    if(group && group->GetIdent() == HTTP_URLGROUP_IDENT)
-    {
-      return group;
-    }
-  }
-  catch(...)
-  {
-    // Error in application: Not a Request handle
-  }
-  return nullptr;
-}

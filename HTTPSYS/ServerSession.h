@@ -2,12 +2,14 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
 
 #pragma once
+#include "http_private.h"
+#include <http.h>
 #include <vector>
 #include <string>
 
@@ -18,7 +20,7 @@
 #define SESSION_MAX_CONNECTIONS   2000000
 
 class UrlGroup;
-class Logfile;
+class LogAnalysis;
 
 using UrlGroups = std::vector<UrlGroup*>;
 using std::wstring;
@@ -31,7 +33,7 @@ public:
 
  // FUNCTIONS
  ULONG      AddUrlGroup   (UrlGroup* p_group);
- bool       RemoveUrlGroup(UrlGroup* p_group);
+ bool       RemoveUrlGroup(HTTP_URL_GROUP_ID p_handle,UrlGroup* p_group);
  // SETTERS
  void       SetSocketLogging(int p_logging);
  void       SetEnabledState(HTTP_ENABLED_STATE p_state);
@@ -45,18 +47,18 @@ public:
 
  // GETTERS
  LPCSTR     GetServerVersion();
- ULONGLONG  GetIdent()                  { return m_ident;                   };
- int        GetSocketLogging()          { return m_socketLogging;           };
- Logfile*   GetLogfile()                { return m_logfile;                 };
- HTTP_ENABLED_STATE GetEnabledState()   { return m_state;                   };
- USHORT     GetTimeoutEntityBody()      { return m_timeoutEntityBody;       };
- USHORT     GetTimeoutDrainEntityBody() { return m_timeoutDrainEntityBody;  };
- USHORT     GetTimeoutRequestQueue()    { return m_timeoutRequestQueue;     };
- USHORT     GetTimeoutIdleConnection()  { return m_timeoutIdleConnection;   };
- USHORT     GetTimeoutHeaderWait()      { return m_timeoutHeaderWait;       };
- ULONG      GetTimeoutMinSendRate()     { return m_timeoutMinSendRate;      };
- int        GetDisableServerHeader()    { return m_disableServerHeader;     };
- unsigned   GetMaxConnections()         { return m_maxConnections;          };
+ ULONGLONG  GetIdent()                  { return m_ident;                   }
+ int        GetSocketLogging()          { return m_socketLogging;           }
+ LogAnalysis* GetLogfile()              { return m_logfile;                 }
+ HTTP_ENABLED_STATE GetEnabledState()   { return m_state;                   }
+ USHORT     GetTimeoutEntityBody()      { return m_timeoutEntityBody;       }
+ USHORT     GetTimeoutDrainEntityBody() { return m_timeoutDrainEntityBody;  }
+ USHORT     GetTimeoutRequestQueue()    { return m_timeoutRequestQueue;     }
+ USHORT     GetTimeoutIdleConnection()  { return m_timeoutIdleConnection;   }
+ USHORT     GetTimeoutHeaderWait()      { return m_timeoutHeaderWait;       }
+ ULONG      GetTimeoutMinSendRate()     { return m_timeoutMinSendRate;      }
+ int        GetDisableServerHeader()    { return m_disableServerHeader;     }
+ unsigned   GetMaxConnections()         { return m_maxConnections;          }
 
 private:
   // Create and start our logfile
@@ -65,10 +67,10 @@ private:
   void    ReadRegistrySettings();
 
   ULONGLONG           m_ident         { HTTP_SERVER_IDENT };
-  Logfile*            m_logfile       { nullptr };
+  LogAnalysis*        m_logfile       { nullptr };
   int                 m_socketLogging { SOCK_LOGGING_OFF };
   HTTP_ENABLED_STATE  m_state         { HttpEnabledStateActive };
-  CString             m_server;       // Server name and version
+  char                m_server[50] =  { 0 };       // Server name and version
   UrlGroups           m_groups;
   // Timeouts
   USHORT              m_timeoutEntityBody        { URL_TIMEOUT_ENTITY_BODY     };
@@ -78,26 +80,8 @@ private:
   USHORT              m_timeoutHeaderWait        { URL_TIMEOUT_HEADER_WAIT     };
   ULONG               m_timeoutMinSendRate       { URL_DEFAULT_MIN_SEND_RATE   };
   // Registry settings
-  int                 m_disableServerHeader { 0    };
-  unsigned            m_maxConnections      { SESSION_MIN_CONNECTIONS };
+  int                 m_disableServerHeader      { 0    };
+  unsigned            m_maxConnections           { SESSION_MIN_CONNECTIONS };
   // Locking for update
   CRITICAL_SECTION    m_lock;
 };
-
-inline ServerSession*
-GetServerSessionFromHandle(HTTP_SERVER_SESSION_ID p_handle)
-{
-  try
-  {
-    ServerSession* session = reinterpret_cast<ServerSession*>(p_handle);
-    if(session && session->GetIdent() == HTTP_SERVER_IDENT)
-    {
-      return session;
-    }
-  }
-  catch(...)
-  {
-    // Error in application: Not a ServerSession handle
-  }
-  return nullptr;
-}

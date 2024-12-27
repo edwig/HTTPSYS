@@ -23,38 +23,38 @@
     <ProjectGuid>{F044F689-FE32-4D06-8873-824417F9060E}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>HTTPSYS</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
-    <UseOfMfc>Static</UseOfMfc>
+    <UseOfMfc>false</UseOfMfc>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
-    <UseOfMfc>Static</UseOfMfc>
+    <UseOfMfc>false</UseOfMfc>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
-    <UseOfMfc>Dynamic</UseOfMfc>
+    <UseOfMfc>false</UseOfMfc>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
-    <UseOfMfc>Static</UseOfMfc>
+    <UseOfMfc>false</UseOfMfc>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -76,17 +76,24 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
+    <OutDir>$(SolutionDir)Bin$(Configuration)_$(Platform)\</OutDir>
+    <TargetName>$(ProjectName)32</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
     <OutDir>$(SolutionDir)Bin$(Configuration)_$(Platform)\</OutDir>
     <TargetExt>.dll</TargetExt>
+    <TargetName>$(ProjectName)64</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
+    <OutDir>$(SolutionDir)Bin$(Configuration)_$(Platform)\</OutDir>
+    <TargetName>$(ProjectName)32</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
+    <OutDir>$(SolutionDir)Bin$(Configuration)_$(Platform)\</OutDir>
+    <TargetName>$(ProjectName)64</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -96,10 +103,14 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(SolutionDir)BaseLibrary\</AdditionalIncludeDirectories>
+      <ExceptionHandling>Async</ExceptionHandling>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>secur32.lib;websocket.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -112,12 +123,14 @@
       <ConformanceMode>true</ConformanceMode>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(SolutionDir)BaseLibrary\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>secur32.lib</AdditionalDependencies>
+      <AdditionalDependencies>secur32.lib;websocket.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -130,12 +143,17 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(SolutionDir)BaseLibrary\</AdditionalIncludeDirectories>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>secur32.lib;websocket.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -149,24 +167,29 @@
       <PreprocessorDefinitions>NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <AdditionalIncludeDirectories>$(SolutionDir)BaseLibrary\</AdditionalIncludeDirectories>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>secur32.lib;websocket.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="CertificateInfo.h" />
-    <ClInclude Include="CodeBase64.h" />
     <ClInclude Include="CreateCertificate.h" />
     <ClInclude Include="GetUserAccount.h" />
     <ClInclude Include="HTTPReadRegister.h" />
+    <ClInclude Include="HTTPSYS_Websocket.h" />
     <ClInclude Include="Listener.h" />
-    <ClInclude Include="Logfile.h" />
     <ClInclude Include="HTTPLoglevel.h" />
     <ClInclude Include="Logging.h" />
+    <ClInclude Include="OpaqueHandles.h" />
     <ClInclude Include="PlainSocket.h" />
     <ClInclude Include="Request.h" />
     <ClInclude Include="RequestQueue.h" />
@@ -177,6 +200,7 @@
     <ClInclude Include="SSLTracer.h" />
     <ClInclude Include="SSLUtilities.h" />
     <ClInclude Include="stdafx.h" />
+    <ClInclude Include="SYSWebSocket.h" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="URL.h" />
     <ClInclude Include="UrlGroup.h" />
@@ -184,11 +208,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CertificateInfo.cpp" />
-    <ClCompile Include="CodeBase64.cpp" />
     <ClCompile Include="CreateCertificate.cpp" />
     <ClCompile Include="ErrorPages.cpp" />
     <ClCompile Include="GetUserAccount.cpp" />
     <ClCompile Include="HttpAddFragmentToCache.cpp" />
+    <ClCompile Include="HttpCloseWebSocket.cpp" />
     <ClCompile Include="HttpCreateHttpHandle.cpp" />
     <ClCompile Include="HttpDeclarePush.cpp" />
     <ClCompile Include="HttpFlushResponseCache.cpp" />
@@ -196,13 +220,13 @@
     <ClCompile Include="HTTPReadRegister.cpp" />
     <ClCompile Include="HttpReceiveClientCertificate.cpp" />
     <ClCompile Include="HttpReceiveRequestEntityBody.cpp" />
+    <ClCompile Include="HttpReceiveWebSocket.cpp" />
     <ClCompile Include="HttpRemoveUrl.cpp" />
     <ClCompile Include="HttpRemoveUrlFromUrlGroup.cpp" />
     <ClCompile Include="HttpSendHttpResponse.cpp" />
     <ClCompile Include="HttpSendResponseEntityBody.cpp" />
     <ClCompile Include="HttpShutdownRequestQueue.cpp" />
     <ClCompile Include="Listener.cpp" />
-    <ClCompile Include="Logfile.cpp" />
     <ClCompile Include="HttpAddUrlToUrlGroup.cpp" />
     <ClCompile Include="HttpCancelHttpRequest.cpp" />
     <ClCompile Include="HttpCloseRequestQueue.cpp" />
@@ -216,6 +240,7 @@
     <ClCompile Include="HttpSetRequestQueueProperty.cpp" />
     <ClCompile Include="HttpSetUrlGroupProperty.cpp" />
     <ClCompile Include="HttpTerminate.cpp" />
+    <ClCompile Include="OpaqueHandles.cpp" />
     <ClCompile Include="PlainSocket.cpp" />
     <ClCompile Include="Request.cpp" />
     <ClCompile Include="RequestQueue.cpp" />
@@ -230,15 +255,8 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="SYSWebSocket.cpp" />
     <ClCompile Include="UrlGroup.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="..\LICENSE" />
-    <None Include="..\README.md" />
-    <None Include="..\Planning.md" />
-  </ItemGroup>
-  <ItemGroup>
-    <Text Include="..\Documentation\Releasenotes.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

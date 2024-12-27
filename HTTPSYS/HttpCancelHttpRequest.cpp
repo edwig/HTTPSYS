@@ -2,7 +2,7 @@
 //
 // USER-SPACE IMPLEMENTTION OF HTTP.SYS
 //
-// 2018 (c) ir. W.E. Huisman
+// 2018 - 2024 (c) ir. W.E. Huisman
 // License: MIT
 //
 //////////////////////////////////////////////////////////////////////////
@@ -12,6 +12,7 @@
 #include "URL.h"
 #include "RequestQueue.h"
 #include "Request.h"
+#include "OpaqueHandles.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -24,15 +25,9 @@ HttpCancelHttpRequest(IN HANDLE           RequestQueueHandle
                      ,IN HTTP_REQUEST_ID  RequestId
                      ,IN LPOVERLAPPED     Overlapped OPTIONAL)
 {
-  // Currently overlapping I/O is unsupported
-  if(Overlapped)
-  {
-    return ERROR_INVALID_PARAMETER;
-  }
-
   // Finding the elementary object
-  RequestQueue* queue = GetRequestQueueFromHandle(RequestQueueHandle);
-  Request*    request = GetRequestFromHandle(RequestId);
+  RequestQueue* queue = g_handles.GetReQueueFromOpaqueHandle(RequestQueueHandle);
+  Request*    request = g_handles.GetRequestFromOpaqueHandle(RequestId);
   if (queue == nullptr || request == nullptr)
   {
     return ERROR_INVALID_PARAMETER;
@@ -41,12 +36,13 @@ HttpCancelHttpRequest(IN HANDLE           RequestQueueHandle
   // Handle our request
   if(queue->RequestStillInService(request))
   {
-//     // Try restart on a keep-alive
-//     if(request->RestartConnection() == false)
-//     {
-      // If not: Remove request from servicing queue
-      queue->RemoveRequest(request);
-//    }
+    queue->RemoveRequest(request);
+  }
+
+  if(Overlapped)
+  {
+    // Post a completion to the applications completion port for the request queue
+    PostQueuedCompletionStatus(queue->GetIOCompletionPort(),0,queue->GetIOCompletionKey(),Overlapped);
   }
   return NO_ERROR;
 }

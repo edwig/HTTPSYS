@@ -16,9 +16,6 @@
     <Filter Include="HTTP_API">
       <UniqueIdentifier>{fb4a00af-4ab5-433b-977b-4d7bf311255c}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Documentation">
-      <UniqueIdentifier>{9264318e-c359-47cf-8e24-26c8577f4e32}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -43,9 +40,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="HTTPLoglevel.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Logfile.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GetUserAccount.h">
@@ -84,10 +78,16 @@
     <ClInclude Include="CertificateInfo.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="CodeBase64.h">
+    <ClInclude Include="HTTPReadRegister.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="HTTPReadRegister.h">
+    <ClInclude Include="HTTPSYS_Websocket.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpaqueHandles.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SYSWebSocket.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -108,9 +108,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Request.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Logfile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="GetUserAccount.cpp">
@@ -215,27 +212,20 @@
     <ClCompile Include="CertificateInfo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="CodeBase64.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="HTTPReadRegister.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="..\Planning.md">
-      <Filter>Documentation</Filter>
-    </None>
-    <None Include="..\README.md">
-      <Filter>Documentation</Filter>
-    </None>
-    <None Include="..\LICENSE">
-      <Filter>Documentation</Filter>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
-    <Text Include="..\Documentation\Releasenotes.txt">
-      <Filter>Documentation</Filter>
-    </Text>
+    <ClCompile Include="HttpCloseWebSocket.cpp">
+      <Filter>HTTP_API</Filter>
+    </ClCompile>
+    <ClCompile Include="HttpReceiveWebSocket.cpp">
+      <Filter>HTTP_API</Filter>
+    </ClCompile>
+    <ClCompile Include="OpaqueHandles.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="SYSWebSocket.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
