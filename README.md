@@ -7,13 +7,12 @@ https://docs.microsoft.com/en-us/windows/desktop/http/http-server-api-version-2-
 
 It was created for various reasons:
 - Educational purposes
-- Non-disclosed functions (websockets)
+- Non-disclosed functions (the websockets implementation)
 - Because it can be done :-)
 
 A number of functions of HTTP.SYS where not (yet) implemented, including
-- Asynchronous I/O
 - HTTP 2.0 Server push
-- Logging follwing the log rules
+- Logging following the log rules
 - Version 1.0 of the "HTTP Server API"
 - Various registry settings of the driver (See document: planning.md)
 
