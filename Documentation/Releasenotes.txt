@@ -15,7 +15,7 @@ Version 1.1.0 dd xx-xx-xxxx
   Determines the upper limit for the total size of the Request line and the headers. 
   Its default setting is 16KB. 
   If this value is lower than MaxFieldLength, the MaxFieldLength value is adjusted.
-
+- Various fixes and improvements for websockets. See the Marlin project for more details.
 
 
 Version 1.1.0 dd 27-12-2024

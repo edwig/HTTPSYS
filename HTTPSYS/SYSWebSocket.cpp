@@ -22,7 +22,7 @@
 #include "Logging.h"
 #include <AutoCritical.h>
 #include <ConvertWideString.h>
-#include <assert.h>
+#include <time.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -34,6 +34,9 @@ constexpr auto WS_MAX_HEADER = 14;  // Maximum header size in octets
 
 SYSWebSocket::SYSWebSocket(Request* p_request)
 {
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
+
   ReConnectSocket(p_request);
   InitializeCriticalSection(&m_lock);
 }
@@ -65,7 +68,7 @@ SYSWebSocket::Close()
       int error = m_socket->GetLastError();
       LogError(_T("Error shutdown websocket: %s Error: %d"),m_serverkey,error);
     }
-    delete m_socket;
+    m_socket->DropReference();
     m_socket = nullptr;
   }
 
@@ -101,6 +104,15 @@ SYSWebSocket::AssociateThreadPool(HANDLE p_threadPoolIOCP)
   m_socket->AssociateThreadPool(p_threadPoolIOCP);
 }
 
+void
+SYSWebSocket::SetPingPongInterval(ULONG p_interval)
+{
+  if(p_interval > WEBSOCKET_PINGPONG_MINTIME && p_interval < WEBSOCKET_PINGPONG_MAXTIME)
+  {
+    m_pingpongTimeout = p_interval;
+  }
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // VIRTUAL INTERFACE
@@ -134,6 +146,9 @@ SYSWebSocket::WritingFragment(LPOVERLAPPED p_overlapped)
 {
   DWORD error            = (DWORD) p_overlapped->Internal;
   DWORD bytesTransferred = (DWORD) p_overlapped->InternalHigh;
+
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
 
   // In case of an overlapped I/O action, call back our application context
   if(m_wswr.Pointer && m_send_Completion)
@@ -255,6 +270,9 @@ HRESULT SYSWebSocket::WriteFragment(_In_    VOID*  pData,
     over.InternalHigh = written;
     WritingFragment(&over);
   }
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
+
   return S_OK;
 }
 
@@ -309,14 +327,16 @@ SYSWebSocket::EncodingFragment(bool p_closing /*= false*/)
     sendBuffer.Data.ulBufferLength = *m_send_Size;
   }
 
+  AutoCritSec lock(&m_lock);
+
   // Prepare for a SEND action
   hr = WebSocketSend(m_handle,sendBufferType,&sendBuffer,NULL);
-  if(FAILED(hr))
+  if(FAILED(hr) || bufferCount == 0)
   {
     return hr;
   }
 
-  // FASE 1: TRANSLATE INCOMING BUFFER
+  // FASE 1: TRANSLATE OUTGOING BUFFER
   do
   {
     // Initialize variables that change with every loop revolution.
@@ -342,7 +362,6 @@ SYSWebSocket::EncodingFragment(bool p_closing /*= false*/)
             // No action to perform - just exit the loop.
             break;
       case  WEB_SOCKET_SEND_TO_NETWORK_ACTION:
-            assert(bufferCount >= 1);
             memcpy_s(m_send_buffer,*m_read_Size + WS_MAX_HEADER,m_sendBuffers[0].Data.pbBuffer,m_sendBuffers[0].Data.ulBufferLength);
             bytesTransferred = m_sendBuffers[0].Data.ulBufferLength;
             break;
@@ -352,21 +371,6 @@ SYSWebSocket::EncodingFragment(bool p_closing /*= false*/)
             hr = E_FAIL;
             return hr;
     }
-
-    if(bytesTransferred== 12)
-    {
-      ++bytesTransferred;
-      --bytesTransferred;
-    }
-
-
-    if(FAILED(hr))
-    {
-      // If we failed at some point processing actions, abort the handle but continue processing
-      // until all operations are completed.
-      WebSocketAbortHandle(m_handle);
-    }
-
     // Complete the action. If application performs asynchronous operation, the action has to be
     // completed after the async operation has finished. The 'actionContext' then has to be preserved
     // so the operation can complete properly.
@@ -377,12 +381,118 @@ SYSWebSocket::EncodingFragment(bool p_closing /*= false*/)
   return bytesTransferred;
 }
 
+BOOL
+SYSWebSocket::SendPingPong(BOOL p_ping /*= TRUE*/)
+{
+  // PHASE 1: SEE IF WE MUST SPRING TO ACTION
+  
+  // Check that we are beyond the timeout
+  if(p_ping && (m_lastAction + m_pingpongTimeout) > (UINT64)_time64(nullptr))
+  {
+    // Nothing to be done, keep the socket alive
+    return true;
+  }
+  // Check if we are closing
+  // in which case we must not send a ping/pong
+  if(m_closeStatus || m_closeReason[0])
+  {
+    // Nothing to be done, socket is going away anyhow
+    return false;
+  }
+
+  // PHASE 2: PREPARE THE BUFFER
+  HRESULT hr = S_OK;
+  ULONG   bufferCount = 2;
+  DWORD   bytesTransferred = 0;
+  WEB_SOCKET_BUFFER       sendBuffers[2] { 0 };
+  WEB_SOCKET_BUFFER_TYPE  sendBufferType { WEB_SOCKET_PING_PONG_BUFFER_TYPE };
+  WEB_SOCKET_ACTION       sendAction     { WEB_SOCKET_NO_ACTION };
+  // Reset the action context
+  m_actionSendContext = nullptr;
+
+  // Lock on the handle
+  AutoCritSec lock(&m_lock);
+
+  // Prepare for a SEND action
+  hr = WebSocketSend(m_handle,WEB_SOCKET_PING_PONG_BUFFER_TYPE,nullptr,nullptr);
+  if(FAILED(hr))
+  {
+    // Handle is dead. Stop the socket
+    return false;
+  }
+
+  // PHASE 3: CREATE PING/PONG BUFFER
+  do
+  {
+    // Initialize variables that change with every loop revolution.
+    bufferCount = ARRAYSIZE(sendBuffers);
+    // Get an action to process.
+    hr = WebSocketGetAction(m_handle,
+                            WEB_SOCKET_SEND_ACTION_QUEUE,
+                            m_sendBuffers,
+                            &bufferCount,
+                            &sendAction,
+                            &sendBufferType,
+                            nullptr,
+                            &m_actionSendContext);
+    if(FAILED(hr) || bufferCount == 0)
+    {
+      // If we cannot get an action, abort the socket
+      return false;
+    }
+    switch(sendAction)
+    {
+      case WEB_SOCKET_NO_ACTION:                      // No action to perform - just exit the loop.
+                                                      break;
+      case WEB_SOCKET_SEND_TO_NETWORK_ACTION:         [[fallthrough]];
+      case WEB_SOCKET_INDICATE_SEND_COMPLETE_ACTION:  memcpy_s(m_pingpong,WEBSOCKET_PINGPONG_SIZE,m_sendBuffers[0].Data.pbBuffer,m_sendBuffers[0].Data.ulBufferLength);
+                                                      bytesTransferred = m_sendBuffers[0].Data.ulBufferLength;
+                                                      break;
+      default:                                        // This should never happen.
+                                                      return false;
+    }
+    // Complete the action. If application performs asynchronous operation, the action has to be
+    // completed after the async operation has finished. The 'actionContext' then has to be preserved
+    // so the operation can complete properly.
+    WebSocketCompleteAction(m_handle,m_actionSendContext,bytesTransferred);
+  }
+  while(sendBufferType != WEB_SOCKET_NO_ACTION);
+
+  // Change the 'PING' to a 'PONG'
+  if(p_ping == FALSE && m_pingpong[3] == 'p')
+  {
+    m_pingpong[4] = 'o';
+  }
+
+  // PHASE 4: SEND THE PING/PONG BUFFER
+
+  // Set up for overlapped I/O
+  memset(&m_wsping,0,sizeof(OVERLAPPED));
+  // m_wsping.Internal     = 0;
+  // m_wsping.InternalHigh = 0;
+  // m_wsping.Pointer = nullptr; // DO **NOT** USE THIS POINTER, so the completion routine will not be called
+  m_wsping.hEvent  = (HANDLE)WebSocketWritingPartialOverlapped;
+  int written = m_socket->SendPartialOverlapped(m_pingpong,bytesTransferred,&m_wsping);
+
+  // Should return IO_PENDING
+  if(written != NO_ERROR)
+  {
+    // Socket most probably dead. Close the WebSocket
+    LogError("Error sending ping/pong: %s",m_serverkey.GetString());
+    return FALSE;
+  }
+
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
+
+  return TRUE;
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // RECEIVING FRAGMENTS
 //
 //////////////////////////////////////////////////////////////////////////
-
 
 // Plain/Secure socket did wake up and send us some results
 //
@@ -489,8 +599,10 @@ HRESULT SYSWebSocket::ReadFragment(_Out_   VOID*  pData,
       {
         m_read_AccomodatedSize = receiveSize;
       }
-
-      TRACE("SYSWEBSOCKET Register ReadFragment\n");
+      if(m_read_AccomodatedSize > *pcbData)
+      {
+        m_read_AccomodatedSize = *pcbData;
+      }
 
       // Set up for overlapped I/O
       memset(&m_wsrd,0,sizeof(OVERLAPPED));
@@ -536,24 +648,15 @@ HRESULT SYSWebSocket::ReadFragment(_Out_   VOID*  pData,
     over.InternalHigh = received;
     ReceiveFragment(&over);
   }
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
+
   return S_OK;
 }
 
 int
 SYSWebSocket::SetupForReceive()
 {
-  // See if there was already an outstanding receive action
-  if(m_recvAction == WEB_SOCKET_RECEIVE_FROM_NETWORK_ACTION)
-  {
-    return m_recvBuffers[0].Data.ulBufferLength;
-  }
-
-  m_actionReadContext = nullptr;
-  m_recvBuffers[0].Data.pbBuffer = nullptr;
-  m_recvBuffers[0].Data.ulBufferLength = 0;
-  m_recvBuffers[1].Data.pbBuffer = nullptr;
-  m_recvBuffers[1].Data.ulBufferLength = 0;
-
   ULONG bufferCount = ARRAYSIZE(m_recvBuffers);
 
   HRESULT hr = WebSocketReceive(m_handle,nullptr,nullptr);
@@ -571,7 +674,6 @@ SYSWebSocket::SetupForReceive()
                             &m_actionReadContext);
     if(SUCCEEDED(hr))
     {
-      TRACE("Buffersize for receive: %d\n",m_recvBuffers[0].Data.ulBufferLength);
       if(m_recvAction == WEB_SOCKET_RECEIVE_FROM_NETWORK_ACTION)
       {
         return m_recvBuffers[0].Data.ulBufferLength;
@@ -588,7 +690,6 @@ SYSWebSocket::SetupForReceive()
       }
     }
   } 
-  TRACE("Failed to setup for receive: %d\n",hr);
   return SOCKET_ERROR;
 }
 
@@ -606,6 +707,10 @@ SYSWebSocket::ReceiveFragment(LPOVERLAPPED p_overlapped)
   BOOL    connectionClose = FALSE;
   BOOL    utf8Encoded     = TRUE;
   BOOL    finalFragment   = FALSE;
+  BOOL    sendPingPong    = FALSE;
+
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
 
   // In case of an error: pass it on to the application
   // we cannot continue to translate any buffered data
@@ -634,8 +739,6 @@ SYSWebSocket::ReceiveFragment(LPOVERLAPPED p_overlapped)
     return;
   }
 
-  TRACE("SYSWEBSOCKET ReceiveFragment\n");
-
   // Locking scope
   {
     AutoCritSec lock(&m_lock);
@@ -658,26 +761,27 @@ SYSWebSocket::ReceiveFragment(LPOVERLAPPED p_overlapped)
                                 &m_recvBufferType,
                                 nullptr,
                                 &m_actionReadContext);
-        if(FAILED(hr))
+        if(FAILED(hr) || bufferCount == 0)
         {
           // If we cannot get an action, abort the handle but continue processing until all operations are completed.
           goto quit;
         }
       }
+      ULONG processed = 0;
+
       switch(m_recvAction)
       {
         case WEB_SOCKET_NO_ACTION:
-             // No action to perform - just exit the loop.
+             // Ready with this receiving action. Must set up a new one!
              break;
 
         case WEB_SOCKET_RECEIVE_FROM_NETWORK_ACTION:
-             assert(bufferCount >= 1);
              memcpy_s(m_recvBuffers[0].Data.pbBuffer,m_recvBuffers[0].Data.ulBufferLength,m_read_buffer,bytesTransferred);
+             processed = bytesTransferred;
              break;
         case WEB_SOCKET_INDICATE_RECEIVE_COMPLETE_ACTION:
              // Copy out the data to the application
              memcpy_s(m_read_Data,*m_read_Size,m_recvBuffers[0].Data.pbBuffer,m_recvBuffers[0].Data.ulBufferLength);
-
              switch(m_recvBufferType)
              {
                 case WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE:     utf8Encoded   = TRUE;
@@ -698,11 +802,18 @@ SYSWebSocket::ReceiveFragment(LPOVERLAPPED p_overlapped)
                                                               m_closeReasonLength = m_recvBuffers[0].CloseStatus.ulReasonLength;
                                                               connectionClose = TRUE;
                                                               break;
-                case WEB_SOCKET_PING_PONG_BUFFER_TYPE:        // Send a PONG back [ TO BE IMPLEMENTED ]
-                                                              // TODO: Restart the read action
-                                                              break;
+                case WEB_SOCKET_PING_PONG_BUFFER_TYPE:        // Possibly send back a PONG
+                                                              if(m_recvBuffers[0].Data.ulBufferLength >= 4 && _strnicmp((char*)m_recvBuffers[0].Data.pbBuffer,"ping",4) == 0)
+                                                              {
+                                                                sendPingPong = TRUE;
+                                                              }
+                                                              sendPingPong = TRUE;
+                                                              // Restart the read action
+                                                              [[fallthrough]];
                 case WEB_SOCKET_UNSOLICITED_PONG_BUFFER_TYPE: // That's quite OK. Do not take any action
-                                                              // TODO: Restart the read action
+                                                              // Restart the read action
+                                                              m_recvBuffers[0].Data.ulBufferLength = 0;
+                                                              finalFragment = TRUE;
                                                               break;
              }
              bytesTranslated += m_recvBuffers[0].Data.ulBufferLength;
@@ -722,19 +833,31 @@ SYSWebSocket::ReceiveFragment(LPOVERLAPPED p_overlapped)
       // Complete the action. If application performs asynchronous operation, the action has to be
       // completed after the async operation has finished. The 'actionContext' then has to be preserved
       // so the operation can complete properly.
-      WebSocketCompleteAction(m_handle,m_actionReadContext,bytesTransferred);
+      WebSocketCompleteAction(m_handle,m_actionReadContext,processed);
 
       getNextAction = true;
     } 
     while(m_recvAction != WEB_SOCKET_NO_ACTION);
 
-    m_actionReadContext = nullptr;
+  } // End of locking scope
+quit:
+
+  // Ready with this receiving action. Must set up a new one!
+  if(finalFragment)
+  {
+    // Reset the action context
     m_recvBuffers[0].Data.pbBuffer = nullptr;
     m_recvBuffers[0].Data.ulBufferLength = 0;
     m_recvBuffers[1].Data.pbBuffer = nullptr;
     m_recvBuffers[1].Data.ulBufferLength = 0;
-  } // End of locking scope
-quit:
+    m_actionReadContext = nullptr;
+  }
+
+  // We received a PING, trye to send back a PONG
+  if(sendPingPong)
+  {
+    SendPingPong(FALSE);
+  }
 
   // FASE 2: STORE CLOSING REASON AS AN UTF-16 STRING
   if(m_closeReasonLength)
@@ -877,6 +1000,9 @@ SYSWebSocket::SendConnectionClose(_In_    BOOL                     fAsync,
     over.InternalHigh = written;
     WritingFragment(&over);
   }
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
+
   return S_OK;
 }
 
@@ -910,6 +1036,8 @@ SYSWebSocket::CloseTcpConnection(VOID)
   {
     m_socket->Close();
   }
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
 }
 
 VOID
@@ -919,6 +1047,8 @@ SYSWebSocket::CancelOutstandingIO(VOID)
   {
     m_socket->Disconnect();
   }
+  // Last moment we were active
+  m_lastAction = _time64(nullptr);
 }
 
 UINT64 

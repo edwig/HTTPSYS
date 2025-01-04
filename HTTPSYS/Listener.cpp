@@ -259,7 +259,7 @@ void Listener::Listen(void)
     // See if we can have one more connection
     if(g_session->AddConnection())
     {
-      DebugMsg("Accepted socket for port: %d\n",m_port);
+      DebugMsg(_T("Accepted socket for port: %d\n"),m_port);
     }
     else
     {

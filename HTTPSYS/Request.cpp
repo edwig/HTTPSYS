@@ -112,9 +112,7 @@ Request::ReceiveRequest()
   {
     try
     {
-      TRACE("Reading HTTP request header line.. Port: %d\n",m_port);
       ReceiveHeaders();
-      TRACE("Reading HTTP request continuation. Port: %d\n",m_port);
 
       if(CheckAuthentication())
       {
@@ -125,7 +123,6 @@ Request::ReceiveRequest()
       }
       else
       {
-        TRACE("Reading HTTP request accepted req. Port: %d\n", m_port);
         CreateWebSocket();
         m_queue->AddIncomingRequest(this);
         looping = false;
@@ -174,14 +171,14 @@ Request::CloseRequest()
   }
   else if(m_socket)
   {
-  // Close the physical socket
+    // Close the physical socket
     if(m_socket->Close() == false)
     {
       // Log the error
       int error = m_socket->GetLastError();
       LogError(_T("Error shutdown connection: %s Error: %d"),m_request.pRawUrl,error);
     }
-    delete m_socket;
+    m_socket->DropReference();
     m_socket = nullptr;
   }
 

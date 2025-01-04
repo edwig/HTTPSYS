@@ -38,7 +38,6 @@ HTTPSYS_WebSocket* WINAPI
 HttpReceiveWebSocket(IN HANDLE                RequestQueueHandle
                     ,IN HTTP_REQUEST_ID       RequestId
                     ,IN WEB_SOCKET_HANDLE     SocketHandle
-                    ,IN HANDLE                ThreadPoolIOCP
                     ,IN WEB_SOCKET_PROPERTY*  SocketProperties = NULL OPTIONAL
                     ,IN DWORD                 PropertyCount    = 0    OPTIONAL);
 
@@ -105,6 +104,8 @@ public:
         _Out_   LPCWSTR *             ppszReason = NULL,
         _Out_   USHORT *              pcchReason = NULL
     ) = 0;
+
+    virtual BOOL SendPingPong(BOOL p_ping = TRUE) = 0;
 
     virtual VOID CloseTcpConnection(VOID) = 0;
 
