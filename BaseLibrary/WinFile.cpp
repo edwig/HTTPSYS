@@ -824,7 +824,7 @@ WinFile::Read(XString& p_string,uchar p_delim /*= '\n'*/)
   while(true)
   {
     int ch(PageBufferRead());
-    if(ch == EOF)
+    if(ch == EOF || ch == 0)
     {
       m_error = ::GetLastError();
       p_string = TranslateInputBuffer(result);
@@ -3668,10 +3668,19 @@ WinFile::PageBufferRead()
       m_pagePointer = m_pageBuffer;
       m_pageTop     = (uchar*) ((size_t)m_pageBuffer + (size_t)size);
 
+      if(size <= PAGESIZE)
+      {
+        m_pageBuffer[size] = 0;
+      }
+
       // First buffer read in: scan for encoding
       if(scanBom)
       {
         ScanBomInFirstPageBuffer();
+        if(m_pagePointer >= m_pageTop)
+        {
+          return EOF;
+        }
       }
     }
   }
