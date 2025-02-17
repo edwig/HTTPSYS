@@ -28,6 +28,10 @@ BinDebug_Win32
 BinDebug_x64
 BinRelease_Win32
 BinRelease_x64
+BinDebugUnicode_x64
+BinReleaseUnicode_x64
+BinDebugUnicode_Win32
+BinReleaseUnicode_Win32
 
 # Library build Results
 Lib/

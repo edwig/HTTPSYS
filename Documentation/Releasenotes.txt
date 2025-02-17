@@ -1,22 +1,24 @@
 HTTPSYS: User-space implementation of HTTP.SYS
 ==============================================
 
-Version 1.1.0 dd xx-xx-xxxx
+Version 1.2.0 dd 17-02-2025
 ---------------------------
-- MaxConnections 1024 (1024 - 2031616)
-  Overrides the MaxConnections calculation in the driver. This is primarily a function of memory.
-- MaxEndpoints (0)  (0 - 1024)
-  Number of current endpoint objects that are permitted. 
-  The default value of zero implies that the maximum is computed from available memory.
-- MaxFieldLength (16384)
-  Sets an upper limit for each header. See MaxRequestBytes. 
-  This limit translates to approximately 32k characters for a URL.  
-- MaxRequestBytes (16384) 256 - 16777216 (16MB) bytes
-  Determines the upper limit for the total size of the Request line and the headers. 
-  Its default setting is 16KB. 
-  If this value is lower than MaxFieldLength, the MaxFieldLength value is adjusted.
-- Various fixes and improvements for websockets. See the Marlin project for more details.
-
+- Completed the implementation of WebSockets. See the "Marlin" project for more details
+  and a test server "MarlinServer" demo project
+- Completed the implementation of UNICODE.
+- Minor parameter improvements and implementations:
+  o MaxConnections 1024 (1024 - 2031616)
+    Overrides the MaxConnections calculation in the driver. This is primarily a function of memory.
+  o MaxEndpoints (0)  (0 - 1024)
+    Number of current endpoint objects that are permitted. 
+    The default value of zero implies that the maximum is computed from available memory.
+  o MaxFieldLength (16384)
+    Sets an upper limit for each header. See MaxRequestBytes. 
+    This limit translates to approximately 32k characters for a URL.  
+  o MaxRequestBytes (16384) 256 - 16777216 (16MB) bytes
+    Determines the upper limit for the total size of the Request line and the headers. 
+    Its default setting is 16KB. 
+    If this value is lower than MaxFieldLength, the MaxFieldLength value is adjusted.
 
 Version 1.1.0 dd 27-12-2024
 ---------------------------
